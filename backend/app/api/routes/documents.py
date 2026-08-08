@@ -53,3 +53,58 @@ def index_document(
         "chunks_indexed": result.chunks_indexed,
         "status": "ok",
     }
+
+
+@router.delete("", status_code=status.HTTP_200_OK)
+def delete_all_documents(
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete all documents (and their vectors/files) of the current user."""
+    count = document_service.delete_all_documents(user_id=user_id, db=db)
+    return {"deleted": count, "status": "ok"}
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_200_OK)
+def delete_document(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete a single document (and its vectors/file)."""
+    document = document_service.delete_document(
+        document_id=document_id, user_id=user_id, db=db
+    )
+    return {
+        "deleted": 1,
+        "status": "ok",
+        "document_id": document.id,
+        "original_filename": document.original_filename,
+    }
+
+
+@router.get("/{document_id}/content")
+def get_document_content(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return the extracted text of a document so the UI can render it inline."""
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.user_id == user_id)
+        .first()
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    return {
+        "id": document.id,
+        "original_filename": document.original_filename,
+        "file_type": document.file_type,
+        "content_length": document.content_length,
+        "content": document.content,
+    }

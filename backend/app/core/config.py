@@ -43,6 +43,21 @@ class Settings(BaseSettings):
     # --- CORS ---
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # --- LLM (GigaChat, OAuth 2.0 client-credentials + OpenAI-compatible API) ---
+    # Authorization: "Basic base64(GIGACHAT_CLIENT_ID:GIGACHAT_CLIENT_SECRET)"
+    GIGACHAT_CLIENT_ID: str | None = None
+    GIGACHAT_CLIENT_SECRET: str | None = None
+    GIGACHAT_SCOPE: str = "GIGACHAT_API_PERS"
+    GIGACHAT_BASE_URL: str = "https://gigachat.devices.sberbank.ru/api/v1"
+    # Supported: GigaChat-Lite, GigaChat-Pro, GigaChat-Max, GigaChat-Ultra, GigaChat
+    GIGACHAT_MODEL: str = "GigaChat-Max"
+    GIGACHAT_TEMPERATURE: float = 0.2
+    GIGACHAT_MAX_TOKENS: int = 2048
+    GIGACHAT_TIMEOUT: float = 60.0
+    # OAuth access token TTL: refresh every 30 minutes.
+    GIGACHAT_TOKEN_TTL_SECONDS: int = 1800
+    CHAT_TOP_K: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

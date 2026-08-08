@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.document import Document
 from app.services import extraction
-from app.services.indexing import index_document
+from app.services.indexing import delete_document_index, index_document
 
 logger = logging.getLogger("app.documents")
 
@@ -100,3 +100,47 @@ def _validate_magic_bytes(content: bytes, declared_type: str) -> None:
 
 def list_documents(user_id: int, db: Session) -> list[Document]:
     return db.query(Document).filter(Document.user_id == user_id).order_by(Document.created_at.desc()).all()
+
+
+def delete_document(document_id: int, user_id: int, db: Session) -> Document:
+    """Remove a document: its vectors from Qdrant, its file from disk and its DB row."""
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.user_id == user_id)
+        .first()
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    _remove_vectors_and_file(document)
+    db.delete(document)
+    db.commit()
+    return document
+
+
+def delete_all_documents(user_id: int, db: Session) -> int:
+    """Remove every document of a user: vectors, files and DB rows. Returns count."""
+    documents = db.query(Document).filter(Document.user_id == user_id).all()
+    for document in documents:
+        _remove_vectors_and_file(document)
+    count = len(documents)
+    db.query(Document).filter(Document.user_id == user_id).delete(synchronize_session=False)
+    db.commit()
+    return count
+
+
+def _remove_vectors_and_file(document: Document) -> None:
+    """Best-effort cleanup of Qdrant vectors and the on-disk file."""
+    try:
+        delete_document_index(document.id)
+    except Exception:
+        logger.exception("Failed to delete vectors for document %s", document.id)
+
+    filepath = Path(document.filepath)
+    try:
+        filepath.unlink(missing_ok=True)
+    except Exception:
+        logger.exception("Failed to remove file %s for document %s", document.filepath, document.id)

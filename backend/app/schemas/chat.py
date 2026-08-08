@@ -8,8 +8,10 @@ class ChatRequest(BaseModel):
 
 class SourceRef(BaseModel):
     document_id: int
-    page: int | None = None
-    snippet: str = ""
+    filename: str = ""
+    chunk_index: int = 0
+    score: float = 0.0
+    text: str = ""
 
 
 class ChatResponse(BaseModel):

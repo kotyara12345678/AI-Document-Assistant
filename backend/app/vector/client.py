@@ -93,10 +93,70 @@ def delete_document_vectors(
     return 1 if deleted else 0
 
 
+def delete_user_vectors(
+    user_id: int,
+    client: QdrantClient | None = None,
+    collection: str | None = None,
+) -> int:
+    """Delete all points belonging to a user. Returns deleted count."""
+    client = client or get_qdrant_client()
+    name = collection or settings.QDRANT_COLLECTION
+
+    try:
+        client.get_collection(name)
+    except Exception:
+        return 0
+
+    result = client.delete(
+        collection_name=name,
+        points_selector=qmodels.FilterSelector(
+            filter=qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="user_id",
+                        match=qmodels.MatchValue(value=user_id),
+                    )
+                ]
+            )
+        ),
+    )
+    return 1 if getattr(result, "status", None) else 0
+
+
+def document_vector_count(
+    document_id: int,
+    client: QdrantClient | None = None,
+    collection: str | None = None,
+) -> int:
+    """Number of chunk points stored for a document (0 if the collection is missing)."""
+    client = client or get_qdrant_client()
+    name = collection or settings.QDRANT_COLLECTION
+
+    try:
+        client.get_collection(name)
+    except Exception:
+        return 0
+
+    result = client.count(
+        collection_name=name,
+        count_filter=qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(
+                    key="document_id",
+                    match=qmodels.MatchValue(value=document_id),
+                )
+            ]
+        ),
+        exact=True,
+    )
+    return int(getattr(result, "count", 0))
+
+
 def search_vectors(
     query_vector: list[float],
     limit: int = 5,
     user_id: int | None = None,
+    document_id: int | None = None,
     client: QdrantClient | None = None,
     collection: str | None = None,
 ) -> list[dict]:
@@ -104,16 +164,22 @@ def search_vectors(
     client = client or get_qdrant_client()
     name = collection or settings.QDRANT_COLLECTION
 
-    query_filter = None
+    must = []
     if user_id is not None:
-        query_filter = qmodels.Filter(
-            must=[
-                qmodels.FieldCondition(
-                    key="user_id",
-                    match=qmodels.MatchValue(value=user_id),
-                )
-            ]
+        must.append(
+            qmodels.FieldCondition(
+                key="user_id",
+                match=qmodels.MatchValue(value=user_id),
+            )
         )
+    if document_id is not None:
+        must.append(
+            qmodels.FieldCondition(
+                key="document_id",
+                match=qmodels.MatchValue(value=document_id),
+            )
+        )
+    query_filter = qmodels.Filter(must=must) if must else None
 
     results = client.query_points(
         collection_name=name,
