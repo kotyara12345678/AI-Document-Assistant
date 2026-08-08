@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN groupadd --system app && useradd --system --gid app app
+RUN groupadd --system app && useradd --system --gid app app \
+    && mkdir -p /data/uploads && chown app:app /data/uploads
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

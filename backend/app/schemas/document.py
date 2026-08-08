@@ -8,4 +8,8 @@ class DocumentOut(BaseModel):
 
     id: int
     filename: str
+    original_filename: str
+    file_type: str
+    file_size: int
+    content_length: int
     created_at: datetime

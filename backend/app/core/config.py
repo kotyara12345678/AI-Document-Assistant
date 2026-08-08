@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # --- File uploads ---
     UPLOAD_DIR: str = "/data/uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
-    ALLOWED_EXTENSIONS: list[str] = ["pdf", "docx"]
+    ALLOWED_EXTENSIONS: list[str] = ["pdf", "txt", "docx"]
 
     # --- CORS ---
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
