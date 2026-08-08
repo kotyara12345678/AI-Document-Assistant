@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import chat, documents, health
+from app.api.routes import chat, documents, health, search
 from app.core.config import settings
 
 
@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(documents.router, prefix=f"{settings.API_PREFIX}/documents", tags=["documents"])
     app.include_router(chat.router, prefix=f"{settings.API_PREFIX}/chat", tags=["chat"])
+    app.include_router(search.router, prefix=f"{settings.API_PREFIX}/search", tags=["search"])
 
     @app.get("/")
     def root() -> dict:

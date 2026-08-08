@@ -76,13 +76,18 @@ uvicorn app.main:app --reload
 | Метод | Путь                   | Описание                               |
 | ----- | ---------------------- | -------------------------------------- |
 | GET   | `/health`              | Статус сервиса и зависимостей          |
-| POST  | `/api/documents/upload`| Загрузка PDF/TXT/DOCX                  |
+| POST  | `/api/documents/upload`| Загрузка PDF/TXT/DOCX + индексация     |
 | GET   | `/api/documents`       | Список документов пользователя         |
+| POST  | `/api/documents/{id}/index` | Повторная индексация документа     |
+| POST  | `/api/search`          | Семантический поиск по фрагментам      |
 | POST  | `/api/chat`            | Вопрос по документам (заглушка)        |
 
 При загрузке сервис проверяет расширение и содержимое (magic bytes),
 сохраняет исходный файл в volume `/data/uploads`, извлекает полный текст и
-сохраняет метаданные + текст в PostgreSQL. Текст не возвращается в ответе.
+сохраняет метаданные + текст в PostgreSQL. Затем текст автоматически
+разбивается на чанки, эмбеддится MiniLM (`all-MiniLM-L6-v2`) и индексируется
+в Qdrant. Ошибки индексации не ломают запись Document (логируются).
+Текст документа не возвращается в ответе.
 
 Пример запроса на загрузку:
 
@@ -104,6 +109,27 @@ curl -F "file=@report.pdf" http://localhost:8000/api/documents/upload
 }
 ```
 
+Семантический поиск:
+
+```bash
+curl -X POST http://localhost:8000/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "какой бюджет на маркетинг", "limit": 5}'
+```
+
+Ответ — найденные чанки с `document_id`, `filename`, `chunk_index`,
+`text` и `score`. Индексация Qdrant автоматически удаляется/повторяется через
+`POST /api/documents/{id}/index` (сначала векторы удаляются, затем
+индексируются заново).
+
+Проверка Qdrant вручную:
+
+```bash
+curl http://localhost:6333/collections/document_chunks   # status, points_count, vector_size=384
+curl -X POST http://localhost:6333/collections/document_chunks/points/scroll \
+  -H "Content-Type: application/json" -d '{"limit": 5, "with_vector": false}'
+```
+
 > Аутентификация пока не реализована: эндпоинты используют заглушку
 > `get_current_user_id()` (user_id=1). Чтобы загрузка работала, в БД должен
 > существовать пользователь с id=1:
@@ -117,13 +143,23 @@ curl -X POST http://localhost:8000/api/chat \
   -d '{"document_id": 1, "question": "Какой бюджет на маркетинг?"}'
 ```
 
+## Тесты
+
+```bash
+# dev-зависимости ставятся один раз
+docker compose exec -u root backend pip install -r requirements-dev.txt
+docker compose exec backend pytest tests -q
+```
+
+Тесты проверяют: загрузку TXT/PDF/DOCX (201), отклонение битых/пустых
+файлов, появление Document в PostgreSQL, появление чанков в Qdrant,
+semantic search и соответствие найденного чанка нужному document_id,
+ручную (пере)индексацию и удаление векторов.
+
 ## Следующие этапы
 
-1. **Chunking** — разбивка извлечённого текста на смысловые части с сохранением номера страницы.
-2. **Embeddings** — генерация векторов (Gemini/Qwen API) и загрузка в Qdrant.
-3. **Поиск** — семантический поиск фрагментов по вопросу (Qdrant search).
-4. **Генерация ответов** — LLM-промпт по найденным фрагментам + источники.
-5. **OCR** — извлечение текста из сканов PDF (Tesseract).
-6. **Аутентификация** — JWT (замена `get_current_user_id`).
-7. **Frontend** — простая веб-версия (`frontend/`), затем опционально Electron.
-8. **Учёт токенов** — запись `UsageLog` на каждый запрос к LLM.
+1. **Генерация ответов** — LLM-промпт по найденным фрагментам + источники.
+2. **OCR** — извлечение текста из сканов PDF (Tesseract).
+3. **Аутентификация** — JWT (замена `get_current_user_id`).
+4. **Frontend** — простая веб-версия (`frontend/`), затем опционально Electron.
+5. **Учёт токенов** — запись `UsageLog` на каждый запрос к LLM.

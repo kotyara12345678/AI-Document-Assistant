@@ -26,7 +26,14 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://qdrant:6333"
     QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION: str = "document_chunks"
-    QDRANT_VECTOR_SIZE: int = 768
+
+    # --- Embeddings ---
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Vector dimension is derived automatically from the model, not hardcoded.
+
+    # --- Chunking ---
+    CHUNK_SIZE: int = 600
+    CHUNK_OVERLAP: int = 100
 
     # --- File uploads ---
     UPLOAD_DIR: str = "/data/uploads"

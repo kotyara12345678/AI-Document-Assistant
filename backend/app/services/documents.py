@@ -1,3 +1,4 @@
+import logging
 import uuid
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.document import Document
 from app.services import extraction
+from app.services.indexing import index_document
+
+logger = logging.getLogger("app.documents")
 
 
 def _validate_extension(filename: str) -> str:
@@ -71,6 +75,14 @@ def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
     db.add(document)
     db.commit()
     db.refresh(document)
+
+    # Indexing must not break the upload: the Document record is already
+    # committed, so failures here are logged and reported separately.
+    try:
+        index_document(document)
+    except Exception:
+        logger.exception("Indexing failed for document %s", document.id)
+
     return document
 
 
