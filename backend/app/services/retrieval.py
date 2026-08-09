@@ -4,6 +4,8 @@ The two retrievers run in parallel. Semantic scores are already cosine
 similarities in [0, 1]; keyword ts_rank values are max-normalized onto the
 same scale. Results are merged with dedup by (document_id, chunk_index),
 keeping the higher of the two scores, then sorted and filtered by min_score.
+When the reranker is enabled the merged candidates are re-scored by a
+cross-encoder and cut down to the final top_k (see reranker.py).
 """
 
 import logging
@@ -12,8 +14,10 @@ from dataclasses import dataclass
 
 import sqlalchemy as sa
 
+from app.core.config import settings
 from app.database.session import SessionLocal
 from app.schemas.chat import SourceRef
+from app.services import reranker
 from app.vector import client as vector_client
 from app.vector.embeddings import embed_text
 
@@ -178,6 +182,36 @@ def _merge_results(
     return results[:top_k]
 
 
+def _rerank(question: str, chunks: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
+    """Re-order hybrid candidates with the cross-encoder reranker.
+
+    Each candidate gets a sigmoid relevance score in [0, 1] (see
+    reranker.compute_scores); the top_k candidates are returned, carrying the
+    reranker score in place of the raw hybrid score so sources reflect it.
+    """
+    scores = reranker.compute_scores(question, [chunk.text for chunk in chunks])
+    ranked = sorted(
+        zip(chunks, scores), key=lambda pair: pair[1], reverse=True
+    )
+    results: list[RetrievedChunk] = []
+    for chunk, score in ranked[:top_k]:
+        score = round(float(score), 6)
+        results.append(
+            RetrievedChunk(
+                source=SourceRef(
+                    document_id=chunk.source.document_id,
+                    filename=chunk.source.filename,
+                    chunk_index=chunk.source.chunk_index,
+                    score=score,
+                    text=chunk.source.text,
+                ),
+                score=score,
+                text=chunk.text,
+            )
+        )
+    return results
+
+
 def retrieve_context(
     question: str,
     user_id: int,
@@ -187,18 +221,38 @@ def retrieve_context(
 ) -> list[RetrievedChunk]:
     """Run semantic + keyword retrieval in parallel and merge the results.
 
+    When the reranker is enabled the merge step first produces a wider
+    candidate pool (RERANKER_CANDIDATES) which is then re-ranked by the
+    cross-encoder and cut down to ``top_k``. When disabled the results are
+    returned straight from the hybrid merge. If re-ranking fails the code
+    falls back to the hybrid order instead of failing the request.
+
     Returns an empty list when nothing was found or both retrievers failed —
     the caller should answer honestly that no information was found instead of
     failing the request.
     """
+    candidate_k = top_k
+    rerank_enabled = settings.RERANKER_ENABLED
+    if rerank_enabled:
+        candidate_k = max(top_k, settings.RERANKER_CANDIDATES)
+
     with ThreadPoolExecutor(max_workers=2) as executor:
         semantic_future = executor.submit(
-            _semantic_search, question, user_id, document_id, top_k
+            _semantic_search, question, user_id, document_id, candidate_k
         )
         keyword_future = executor.submit(
-            _keyword_search, question, user_id, document_id, top_k
+            _keyword_search, question, user_id, document_id, candidate_k
         )
         semantic_chunks = semantic_future.result()
         keyword_rows = keyword_future.result()
 
-    return _merge_results(semantic_chunks, keyword_rows, top_k, min_score)
+    merged = _merge_results(semantic_chunks, keyword_rows, candidate_k, min_score)
+
+    if not rerank_enabled or not merged:
+        return merged[:top_k]
+
+    try:
+        return _rerank(question, merged, top_k)
+    except Exception:
+        logger.exception("Reranker failed; falling back to hybrid order")
+        return merged[:top_k]

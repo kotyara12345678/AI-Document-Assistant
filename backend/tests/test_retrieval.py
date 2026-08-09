@@ -9,8 +9,10 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.main import app
 from app.services import retrieval
+from app.services import reranker as reranker_service
 
 API_PREFIX = "/api"
 
@@ -136,3 +138,62 @@ def test_retrieve_context_returns_empty_when_nothing_matches(client):
     noise = f"zxqwvx{uuid.uuid4().hex[:8]}"
     chunks = retrieval.retrieve_context(question=noise, user_id=1, top_k=5, min_score=0.3)
     assert chunks == []
+
+
+def test_reranker_reorders_candidates_and_cuts_to_top_k(client, monkeypatch):
+    """With the reranker enabled, hybrid produces a wider pool and the
+    cross-encoder scores decide the final order/size, without loading the real
+    model (compute_scores is stubbed)."""
+    marker_a = f"RRA{uuid.uuid4().hex[:8]}"
+    marker_b = f"RRB{uuid.uuid4().hex[:8]}"
+    text_a = (f"Криогенная установка {marker_a}. Температура 50 мК. ") * 20
+    text_b = (f"Криогенная установка {marker_b}. Температура 120 мК. ") * 20
+
+    resp_a = _upload(client, "rerank_a.txt", text_a.encode("utf-8"))
+    assert resp_a.status_code == 201, resp_a.text
+    assert _upload(client, "rerank_b.txt", text_b.encode("utf-8")).status_code == 201
+
+    question = f"криогенная установка {marker_a} {marker_b}"
+
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANKER_CANDIDATES", 30)
+
+    def fake_compute_scores(q, texts):
+        # Prefer chunks that mention marker_b regardless of pool position.
+        return [0.99 if marker_b in t else 0.15 for t in texts]
+
+    monkeypatch.setattr(reranker_service, "compute_scores", fake_compute_scores)
+
+    chunks = retrieval.retrieve_context(question=question, user_id=1, top_k=2, min_score=0.3)
+    assert chunks, "Expected reranked chunks"
+    assert len(chunks) <= 2
+    assert marker_b in chunks[0].text, "Reranker must move the preferred candidate to the top"
+    assert abs(chunks[0].score - 0.99) < 1e-6
+    assert chunks[0].score == chunks[0].source.score
+    for chunk in chunks:
+        assert 0.0 <= chunk.score <= 1.0
+
+
+def test_reranker_falls_back_to_hybrid_order_on_error(client, monkeypatch):
+    """A failing reranker must not break the request: results fall back to the
+    plain hybrid order."""
+    marker = f"FALL{uuid.uuid4().hex[:8]}"
+    text = (f"Документ про теплообменники {marker}. Расход 500 литров. ") * 20
+    resp = _upload(client, "fallback.txt", text.encode("utf-8"))
+    assert resp.status_code == 201, resp.text
+
+    question = f"что про теплообменники {marker}"
+    expected = retrieval.retrieve_context(question=question, user_id=1, top_k=5, min_score=0.3)
+    assert expected, "Sanity: doc must be findable without the reranker"
+
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+
+    def broken_compute_scores(question, texts):
+        raise RuntimeError("model offline")
+
+    monkeypatch.setattr(reranker_service, "compute_scores", broken_compute_scores)
+
+    chunks = retrieval.retrieve_context(question=question, user_id=1, top_k=5, min_score=0.3)
+    assert chunks, "Fallback must still return results"
+    keys = [(c.source.document_id, c.source.chunk_index) for c in chunks]
+    assert len(keys) == len(set(keys))

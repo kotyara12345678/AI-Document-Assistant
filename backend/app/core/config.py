@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     GIGACHAT_TOKEN_TTL_SECONDS: int = 1800
     CHAT_TOP_K: int = 5
 
+    # --- Reranker (cross-encoder re-ranking of hybrid candidates) ---
+    # When enabled, hybrid retrieval first fetches RERANKER_CANDIDATES chunks
+    # and the reranker re-orders them before the final top_k are sent to the
+    # LLM. Disabled by default so the exported scores keep the hybrid scale.
+    RERANKER_ENABLED: bool = False
+    RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    RERANKER_DEVICE: str = "cpu"
+    # Size of the candidate pool fetched before re-ranking (>= CHAT_TOP_K).
+    RERANKER_CANDIDATES: int = 30
+    # Chunks are truncated to this many characters for re-ranking (cost control).
+    RERANKER_MAX_CHARS: int = 1000
+
     # --- Chat history context (saved in PostgreSQL, sent to GigaChat) ---
     # Number of most recent messages sent verbatim to the LLM on each turn.
     CHAT_HISTORY_MESSAGES: int = 6
