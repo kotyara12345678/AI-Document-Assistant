@@ -92,10 +92,21 @@ def _get_access_token(client: httpx.Client) -> str:
         return _fetch_access_token(client)
 
 
-def _build_messages(prompt: str, system_instruction: str | None) -> list[dict[str, str]]:
+def _build_messages(
+    prompt: str,
+    system_instruction: str | None,
+    history: list[dict[str, str]] | None = None,
+    summary: str | None = None,
+) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction})
+    if summary:
+        messages.append(
+            {"role": "system", "content": f"Summary of the earlier conversation:\n{summary}"}
+        )
+    if history:
+        messages.extend(history)
     messages.append({"role": "user", "content": prompt})
     return messages
 
@@ -104,8 +115,14 @@ def generate_answer(
     prompt: str,
     system_instruction: str | None = None,
     client=None,
+    history: list[dict[str, str]] | None = None,
+    summary: str | None = None,
 ) -> str:
     """Send a prompt to GigaChat and return the text answer.
+
+    `history` carries the most recent turns as [{"role", "content"}] messages
+    and `summary` is a compact rollup of older turns; together they provide
+    conversational context without sending the full history.
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
@@ -116,7 +133,7 @@ def generate_answer(
         "model": settings.GIGACHAT_MODEL,
         "temperature": settings.GIGACHAT_TEMPERATURE,
         "max_tokens": settings.GIGACHAT_MAX_TOKENS,
-        "messages": _build_messages(prompt, system_instruction),
+        "messages": _build_messages(prompt, system_instruction, history, summary),
     }
 
     try:

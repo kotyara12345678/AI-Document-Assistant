@@ -58,6 +58,20 @@ class Settings(BaseSettings):
     GIGACHAT_TOKEN_TTL_SECONDS: int = 1800
     CHAT_TOP_K: int = 5
 
+    # --- Chat history context (saved in PostgreSQL, sent to GigaChat) ---
+    # Number of most recent messages sent verbatim to the LLM on each turn.
+    CHAT_HISTORY_MESSAGES: int = 6
+    # When the stored history grows beyond this many messages, older turns are
+    # collapsed into a rolling summary so the request stays token-cheap.
+    CHAT_SUMMARY_THRESHOLD: int = 20
+    # Summary prompt controls how the rolling history summary is produced.
+    CHAT_SUMMARY_INSTRUCTION: str = (
+        "Summarize the following conversation so far into a concise paragraph "
+        "that captures the user's intent, key facts and open questions. "
+        "Keep it in the same language as the conversation. "
+        "Preserve names, numbers and decisions verbatim where relevant."
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

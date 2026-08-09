@@ -1,4 +1,4 @@
-"""Unit tests for the LLM service (Qwen-Max chat completions). No network calls."""
+"""Unit tests for the LLM service (GigaChat chat completions). No network calls."""
 
 import types
 
@@ -40,21 +40,33 @@ class _FakeClient:
         return _FakeResponse(self._data, status_code=self._status_code)
 
 
-def _patch_settings(monkeypatch, api_key=KEY):
+def _patch_settings(monkeypatch):
     fake = types.SimpleNamespace(
-        QWEN_API_KEY=api_key,
-        QWEN_MODEL="qwen-max",
-        QWEN_TEMPERATURE=0.2,
-        QWEN_TIMEOUT=60.0,
-        QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        GIGACHAT_CLIENT_ID="client-id",
+        GIGACHAT_CLIENT_SECRET="client-secret",
+        GIGACHAT_SCOPE="GIGACHAT_API_PERS",
+        GIGACHAT_MODEL="GigaChat-Max",
+        GIGACHAT_TEMPERATURE=0.2,
+        GIGACHAT_MAX_TOKENS=2048,
+        GIGACHAT_TIMEOUT=60.0,
+        GIGACHAT_BASE_URL="https://gigachat.devices.sberbank.ru/api/v1",
+        GIGACHAT_TOKEN_TTL_SECONDS=1800,
     )
     monkeypatch.setattr("app.services.gemini.settings", fake)
+    monkeypatch.setattr("app.services.gemini._get_access_token", lambda client: KEY)
 
 
-def test_missing_api_key_raises(monkeypatch):
-    _patch_settings(monkeypatch, api_key=None)
-    with pytest.raises(GeminiError, match="QWEN_API_KEY is not configured"):
-        generate_answer("hello", client=_FakeClient())
+def test_missing_credentials_raises(monkeypatch):
+    _patch_settings(monkeypatch)
+    fake = types.SimpleNamespace(
+        GIGACHAT_CLIENT_ID=None,
+        GIGACHAT_CLIENT_SECRET=None,
+    )
+    monkeypatch.setattr("app.services.gemini.settings", fake)
+    from app.services.gemini import _basic_auth_header
+
+    with pytest.raises(GeminiError, match="GIGACHAT_CLIENT_ID"):
+        _basic_auth_header()
 
 
 def test_generate_answer_returns_text(monkeypatch):
@@ -81,7 +93,7 @@ def test_upstream_error_wrapped(monkeypatch):
 def test_http_error_wrapped(monkeypatch):
     _patch_settings(monkeypatch)
     fake = _FakeClient(data={}, status_code=429)
-    with pytest.raises(GeminiError, match="Qwen request failed"):
+    with pytest.raises(GeminiError, match="GigaChat request failed"):
         generate_answer("q", client=fake)
 
 
@@ -104,9 +116,36 @@ def test_passes_model_and_messages(monkeypatch):
     fake = _FakeClient(data={"choices": [{"message": {"content": "ok"}}]})
     generate_answer("hello", system_instruction="be nice", client=fake)
     payload = fake.last_kwargs["json"]
-    assert payload["model"] == "qwen-max"
+    assert payload["model"] == "GigaChat-Max"
     assert payload["messages"] == [
         {"role": "system", "content": "be nice"},
         {"role": "user", "content": "hello"},
     ]
     assert fake.last_kwargs["headers"]["Authorization"] == f"Bearer {KEY}"
+
+
+def test_passes_history_and_summary(monkeypatch):
+    _patch_settings(monkeypatch)
+    fake = _FakeClient(data={"choices": [{"message": {"content": "ok"}}]})
+    history = [
+        {"role": "user", "content": "earlier q"},
+        {"role": "assistant", "content": "earlier a"},
+    ]
+    generate_answer(
+        "hello",
+        system_instruction="be nice",
+        history=history,
+        summary="old turns rolled up",
+        client=fake,
+    )
+    payload = fake.last_kwargs["json"]
+    assert payload["messages"] == [
+        {"role": "system", "content": "be nice"},
+        {
+            "role": "system",
+            "content": "Summary of the earlier conversation:\nold turns rolled up",
+        },
+        {"role": "user", "content": "earlier q"},
+        {"role": "assistant", "content": "earlier a"},
+        {"role": "user", "content": "hello"},
+    ]

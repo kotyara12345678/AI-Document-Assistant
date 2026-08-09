@@ -43,15 +43,45 @@ def _clean_qdrant():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _clean_db():
+    """Isolate each test from documents/chat rows left by previous runs."""
+    from app.database.session import SessionLocal
+    from app.models.chat_message import ChatMessage, ChatSummary
+    from app.models.document import Document
+
+    db = SessionLocal()
+    try:
+        db.query(ChatSummary).delete()
+        db.query(ChatMessage).delete()
+        db.query(Document).delete()
+        db.commit()
+    finally:
+        db.close()
+    yield
+    db = SessionLocal()
+    try:
+        db.query(ChatSummary).delete()
+        db.query(ChatMessage).delete()
+        db.query(Document).delete()
+        db.commit()
+    finally:
+        db.close()
+
+
 @pytest.fixture()
 def fake_gemini(monkeypatch):
     """Replace the real Gemini call with a stub that records the prompt."""
 
     calls = {}
 
-    def fake_generate_answer(prompt, system_instruction=None, client=None, api_key=None):
+    def fake_generate_answer(
+        prompt, system_instruction=None, client=None, history=None, summary=None
+    ):
         calls["prompt"] = prompt
         calls["system_instruction"] = system_instruction
+        calls["history"] = history
+        calls["summary"] = summary
         return "Ответ по документам: бюджет составляет 900000 рублей."
 
     monkeypatch.setattr(gemini, "generate_answer", fake_generate_answer)
@@ -136,7 +166,7 @@ def test_chat_degraded_when_gemini_fails(client, monkeypatch):
     assert resp.status_code == 201
     document_id = resp.json()["id"]
 
-    def failing_gemini(prompt, system_instruction=None, client=None, api_key=None):
+    def failing_gemini(prompt, system_instruction=None, client=None, history=None, summary=None):
         raise gemini.GeminiError("boom")
 
     monkeypatch.setattr(gemini, "generate_answer", failing_gemini)
@@ -149,3 +179,74 @@ def test_chat_degraded_when_gemini_fails(client, monkeypatch):
     data = chat_resp.json()
     assert "Gemini unavailable" in data["answer"]
     assert data["sources"], "Fallback answer should still expose sources"
+
+
+def test_chat_history_is_passed_to_gemini(client, fake_gemini):
+    """Each turn must reach Gemini with the recent history as context."""
+    marker = f"HIST{uuid.uuid4().hex[:6]}"
+    text = (
+        f"База знаний по маркетингу {marker}. "
+        "Бюджет на контекстную рекламу 300000 рублей. "
+    ) * 20
+    _upload(client, "history_doc.txt", text.encode("utf-8"))
+
+    client.post(f"{API_PREFIX}/chat", json={"question": f"что в документе {marker}"})
+    second = client.post(
+        f"{API_PREFIX}/chat",
+        json={"question": f"а сколько на контекстную рекламу {marker}"},
+    )
+    assert second.status_code == 200, second.text
+
+    # The second turn must have received the first user/assistant pair.
+    assert fake_gemini["history"], "Expected chat history in the LLM request"
+    roles = [m["role"] for m in fake_gemini["history"]]
+    assert roles == ["user", "assistant"]
+    assert marker in fake_gemini["history"][0]["content"]
+
+
+def test_history_rolling_summary(client, monkeypatch):
+    """After the summary threshold is crossed, older turns are folded into a summary."""
+    marker = f"SUMM{uuid.uuid4().hex[:6]}"
+    text = (
+        f"Данные о продажах {marker}. Рост выручки составил 15%. "
+    ) * 20
+    _upload(client, "summary_doc.txt", text.encode("utf-8"))
+
+    calls = []
+
+    def summarizing_gemini(
+        prompt, system_instruction=None, client=None, history=None, summary=None
+    ):
+        calls.append(
+            {"prompt": prompt, "system_instruction": system_instruction,
+             "history": history, "summary": summary}
+        )
+        return "Ответ про продажи."
+
+    monkeypatch.setattr(gemini, "generate_answer", summarizing_gemini)
+
+    # Force a low threshold so the summary kicks in within a handful of turns.
+    from app.services import chat as chat_service
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CHAT_SUMMARY_THRESHOLD", 2)
+    monkeypatch.setattr(settings, "CHAT_HISTORY_MESSAGES", 2)
+
+    for i in range(6):
+        resp = client.post(f"{API_PREFIX}/chat", json={"question": f"вопрос номер {i} {marker}"})
+        assert resp.status_code == 200, resp.text
+
+    # At least one request must have triggered summary generation: the final
+    # LLM call either carries a non-None summary, or a summary call happened.
+    summary_calls = [c for c in calls if c["system_instruction"] == settings.CHAT_SUMMARY_INSTRUCTION]
+    assert summary_calls, "Expected at least one summary generation call"
+    last_summary = summary_calls[-1]
+    assert last_summary["prompt"], "Summary prompt should not be empty"
+    assert "опрос номер" in last_summary["prompt"] or marker in last_summary["prompt"]
+
+    # The most recent answer call should either use the summary or a bounded history.
+    answer_calls = [c for c in calls if c["system_instruction"] != settings.CHAT_SUMMARY_INSTRUCTION]
+    assert answer_calls
+    last = answer_calls[-1]
+    assert last["summary"] is not None or len(last["history"] or []) <= 2
+
