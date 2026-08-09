@@ -1,246 +1,580 @@
 # AI Document Assistant
 
-Веб-сервис: пользователь регистрируется, загружает документы (PDF/DOCX/TXT),
-система индексирует их, а затем позволяет задавать вопросы по содержимому
-через AI (RAG) — ответы формируются по найденным фрагментам документов с
-указанием источников.
+**AI Document Assistant (ADA)** — веб-сервис для хранения документов и поиска информации внутри них с использованием искусственного интеллекта.
 
-> Текущий статус: **рабочее ядро MVP**. Есть регистрация/вход (JWT, bcrypt),
-> загрузка и индексация файлов, семантический поиск и RAG-чат с ответами
-> GigaChat и ссылками на исходные фрагменты. Следующие этапы: OCR для сканов,
-> учёт токенов LLM и т.д. (см. конец файла).
+Пользователь загружает документы, после чего может задавать вопросы обычным естественным языком. Система самостоятельно находит релевантные фрагменты документов, ранжирует их и передаёт наиболее подходящий контекст языковой модели. Ответ сопровождается источниками, позволяющими проверить, откуда была взята информация.
+
+## Текущий статус
+
+**Рабочий MVP.**
+
+Уже реализовано:
+
+* регистрация и авторизация пользователей;
+* JWT-аутентификация;
+* хеширование паролей через bcrypt;
+* приватная изоляция данных пользователей;
+* загрузка PDF, DOCX и TXT;
+* извлечение и хранение текста документов;
+* автоматический chunking;
+* embeddings через MiniLM;
+* хранение embeddings в Qdrant;
+* hybrid search: semantic + keyword retrieval;
+* reranking результатов через CrossEncoder;
+* RAG-чат с GigaChat;
+* ответы с источниками;
+* история чатов;
+* удаление документов и чатов;
+* просмотр найденных фрагментов документов;
+* frontend на React + Vite + TypeScript;
+* Docker Compose;
+* автоматические тесты backend и E2E-сценарии.
 
 ## Архитектура
 
+```text
+                         ┌──────────────────┐
+                         │    Frontend      │
+                         │ React + Vite     │
+                         └────────┬─────────┘
+                                  │ HTTP
+                                  ▼
+                         ┌──────────────────┐
+                         │ Backend FastAPI  │
+                         │                  │
+                         │ Auth             │
+                         │ Documents        │
+                         │ Chat             │
+                         │ Retrieval        │
+                         │ Reranker         │
+                         └──────┬─────┬─────┘
+                                │     │
+                    ┌───────────┘     └────────────┐
+                    ▼                              ▼
+             ┌──────────────┐               ┌──────────────┐
+             │ PostgreSQL   │               │   Qdrant     │
+             │              │               │              │
+             │ Users        │               │ Embeddings   │
+             │ Documents    │               │ Chunks       │
+             │ Chunks       │               │ Payloads     │
+             │ Chats        │               └──────────────┘
+             │ FTS          │
+             └──────────────┘
+
+                         Retrieval
+                             │
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+       Semantic Search                 Keyword Search
+           Qdrant                     PostgreSQL FTS
+              │                             │
+              └──────────────┬──────────────┘
+                             ▼
+                       Hybrid Merge
+                             │
+                             ▼
+                       CrossEncoder
+                         Reranker
+                             │
+                             ▼
+                       Top-K Context
+                             │
+                             ▼
+                         GigaChat
+                             │
+                             ▼
+                    Answer + Sources
 ```
-┌────────────┐     HTTP     ┌─────────────────────────────────────────────┐
-│  Frontend  │ ───────────▶ │              Backend (FastAPI)              │
-│  (React)   │              │  app/main.py → api/routes → services        │
-└────────────┘              │       │                        │            │
-                            │       ▼                        ▼            │
-                            │  database/session.py     vector/client.py   │
-                            └───────┬────────────────────────┬────────────┘
-                                    │                        │
-                                    ▼                        ▼
-                              ┌───────────┐            ┌──────────┐
-                              │ PostgreSQL │            │  Qdrant  │
-                              │ (user,     │            │ (векторы │
-                              │  docs,     │            │  чанков) │
-                              │  chat)     │            └──────────┘
-                              └───────────┘
+
+## Стек
+
+### Backend
+
+* Python
+* FastAPI
+* SQLAlchemy 2.0
+* PostgreSQL
+* Alembic
+* Qdrant
+* PyJWT
+* bcrypt
+* sentence-transformers
+
+### Frontend
+
+* React
+* Vite
+* TypeScript
+
+### AI / Retrieval
+
+* **MiniLM (`all-MiniLM-L6-v2`)** — создание embeddings;
+* **Qdrant** — vector similarity search;
+* **PostgreSQL Full-Text Search** — keyword retrieval;
+* **CrossEncoder** — reranking найденных кандидатов;
+* **GigaChat** — генерация финального ответа.
+
+## Как работает поиск
+
+ADA использует гибридный retrieval pipeline.
+
+### 1. Semantic search
+
+Запрос пользователя преобразуется MiniLM в embedding.
+
+Qdrant находит наиболее близкие по смыслу chunks документов.
+
+Это позволяет находить информацию даже тогда, когда пользователь использует формулировку, отличающуюся от текста документа.
+
+### 2. Keyword search
+
+Одновременно PostgreSQL выполняет полнотекстовый поиск по содержимому chunks.
+
+Используется PostgreSQL FTS и `ts_rank`.
+
+Keyword search особенно полезен для:
+
+* имён;
+* кодов;
+* артикулов;
+* технических обозначений;
+* точных терминов;
+* числовых значений.
+
+### 3. Hybrid merge
+
+Результаты semantic и keyword retrieval объединяются.
+
+Дубликаты определяются по:
+
+```text
+(document_id, chunk_index)
 ```
 
-### Слои приложения (`backend/app/`)
+Для одинаковых chunks сохраняется лучший score.
 
-| Директория   | Назначение                                                        |
-| ------------ | ----------------------------------------------------------------- |
-| `api/routes` | HTTP-эндпоинты: `auth`, `documents`, `chat`, `chats`, `search`    |
-| `core`       | Конфигурация (`config.py`) и безопасность (`security.py`, JWT)    |
-| `database`   | Движок/Session (SQLAlchemy 2.0) и базовый класс моделей           |
-| `models`     | ORM-модели: `User`, `Document`, `DocumentChunk`, `Chat`, …        |
-| `schemas`    | Pydantic-схемы (запросы/ответы API)                               |
-| `services`   | Бизнес-логика: индексация, retrieval/rerank, генерация (GigaChat) |
-| `vector`     | Клиент Qdrant и управление коллекцией                             |
-| `scripts`    | Утилиты (например, разовые скрипты)                               |
+### 4. Reranking
 
-Миграции БД — [Alembic](backend/alembic). Аутентификация: JWT (HS256,
-`core/security.py`), короткий токен на 7 дней (настраивается через
-`JWT_EXPIRE_MINUTES`). Пароли хэшируются через bcrypt. Все эндпоинты
-кроме `/health` и `/api/auth/register`/`/api/auth/login` требуют заголовок
-`Authorization: Bearer <token>`.
+После hybrid retrieval система получает пул из **30 кандидатов**.
 
-Фронтенд — `frontend/` (React + Vite + TypeScript). Перед первым использованием
-показывается экран входа/регистрации; после входа JWT хранится в
-`localStorage` и подставляется во все API-запросы.
+CrossEncoder оценивает каждую пару:
 
-## Быстрый старт
+```text
+(query, document_chunk)
+```
 
-Требования: Docker + Docker Compose.
+и определяет, насколько конкретный chunk действительно отвечает запросу.
+
+После reranking в RAG передаются только лучшие результаты.
+
+Текущая схема:
+
+```text
+Query
+  │
+  ├──► MiniLM → Qdrant ──────┐
+  │                          │
+  └──► PostgreSQL FTS ───────┤
+                             ▼
+                       Hybrid Merge
+                             │
+                       Top 30 candidates
+                             │
+                             ▼
+                       CrossEncoder
+                         Reranker
+                             │
+                         Top 5
+                             │
+                             ▼
+                          GigaChat
+```
+
+Reranker отключён по умолчанию через конфигурацию и имеет graceful fallback на hybrid retrieval при ошибке.
+
+## Качество retrieval
+
+На тестовом наборе из 8 вопросов и 8 документов:
+
+| Метрика  | Без reranker | С reranker |
+| -------- | -----------: | ---------: |
+| MRR@5    |        0.938 |  **1.000** |
+| Recall@5 |        1.000 |  **1.000** |
+
+Пример сложного случая:
+
+Запрос:
+
+```text
+какова температура криостата, число милликельвин
+```
+
+Без reranker keyword search мог поставить нерелевантный документ с совпадающим термином выше правильного.
+
+После reranking:
+
+```text
+cryostat.txt       0.984
+temperature_trap   0.546
+```
+
+Таким образом, reranker исправляет случаи, когда простой keyword score или semantic similarity недостаточно хорошо различают релевантный и нерелевантный контекст.
+
+Для сравнения retrieval используется:
+
+```text
+backend/scripts/compare_reranker.py
+```
+
+## RAG
+
+После retrieval система передаёт GigaChat только наиболее релевантный контекст.
+
+LLM получает:
+
+```text
+Пользовательский вопрос
+        +
+Релевантные chunks
+        ↓
+     GigaChat
+        ↓
+Ответ + источники
+```
+
+Если релевантных фрагментов не найдено, система не вызывает LLM и возвращает честный ответ об отсутствии информации в документах.
+
+Это снижает количество ненужных запросов к LLM и уменьшает риск галлюцинаций.
+
+## Аутентификация и приватность
+
+В ADA реализована многопользовательская модель.
+
+Каждый пользователь имеет собственные:
+
+* документы;
+* document chunks;
+* поисковые результаты;
+* чаты;
+* сообщения.
+
+Все защищённые API-запросы требуют:
+
+```text
+Authorization: Bearer <JWT>
+```
+
+Регистрация:
+
+```text
+POST /api/auth/register
+```
+
+Вход:
+
+```text
+POST /api/auth/login
+```
+
+Текущий пользователь:
+
+```text
+GET /api/auth/me
+```
+
+Пароли не хранятся в открытом виде и сохраняются только в виде bcrypt-хеша.
+
+Критически важно: пользователь A не должен иметь возможности получить документы, chunks или чаты пользователя B.
+
+## Документы
+
+Поддерживаются:
+
+* PDF;
+* DOCX;
+* TXT.
+
+После загрузки:
+
+```text
+File
+ ↓
+Validation
+ ↓
+Text extraction
+ ↓
+PostgreSQL
+ ↓
+Chunking
+ ↓
+MiniLM
+ ↓
+Qdrant
+```
+
+Исходные файлы сохраняются в Docker volume `/data/uploads`.
+
+Метаданные и извлечённый текст находятся в PostgreSQL.
+
+Embeddings находятся в Qdrant.
+
+Удаление документа выполняется через frontend/API и удаляет связанные данные.
+
+## API
+
+| Метод  | Endpoint                      | Назначение               |
+| ------ | ----------------------------- | ------------------------ |
+| GET    | `/health`                     | Проверка сервиса         |
+| POST   | `/api/auth/register`          | Регистрация              |
+| POST   | `/api/auth/login`             | Авторизация              |
+| GET    | `/api/auth/me`                | Текущий пользователь     |
+| POST   | `/api/documents/upload`       | Загрузка документа       |
+| GET    | `/api/documents`              | Документы пользователя   |
+| GET    | `/api/documents/{id}/content` | Просмотр текста          |
+| POST   | `/api/documents/{id}/index`   | Повторная индексация     |
+| DELETE | `/api/documents/{id}`         | Удаление документа       |
+| DELETE | `/api/documents`              | Удаление всех документов |
+| POST   | `/api/search`                 | Hybrid search            |
+| POST   | `/api/chat`                   | RAG-вопрос               |
+| GET    | `/api/chats`                  | История чатов            |
+| POST   | `/api/chats`                  | Создание чата            |
+| GET    | `/api/chats/{id}/messages`    | Сообщения                |
+| DELETE | `/api/chats/{id}`             | Удаление чата            |
+
+## Frontend
+
+После запуска пользователь видит экран:
+
+```text
+┌──────────────────────────────┐
+│        Вход / Регистрация    │
+└──────────────────────────────┘
+```
+
+После авторизации:
+
+```text
+┌──────────────┬──────────────────────────┐
+│ Чаты         │                          │
+│              │       AI Chat            │
+│ Документы    │                          │
+│              │  Ответ + Sources         │
+│ Загрузка     │                          │
+└──────────────┴──────────────────────────┘
+```
+
+Доступны:
+
+* регистрация;
+* вход;
+* выход;
+* история чатов;
+* загрузка документов;
+* удаление документов;
+* вопросы к документам;
+* отображение sources;
+* просмотр найденных фрагментов;
+* подсветка найденного текста;
+* светлая/тёмная тема.
+
+## Docker
+
+Запуск:
 
 ```bash
-# 1. Подготовить конфигурацию
-cp backend/.env.example backend/.env
-
-# 2. Собрать и запустить (PostgreSQL + Qdrant + backend + frontend)
 docker compose up --build
+```
 
-# 3. Применить миграции (в отдельном терминале)
+Миграции:
+
+```bash
 docker compose exec backend alembic upgrade head
 ```
 
-Проверка:
+Health check:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-- Фронтенд: http://localhost:5173
-- API-документация (Swagger): http://localhost:8000/docs
+Frontend:
 
-### Локальная разработка без Docker
-
-```bash
-cd backend
-python -m venv .venv && .venv\Scripts\activate   # Windows
-pip install -r requirements.txt -r requirements-dev.txt
-# задать DATABASE_URL на свой PostgreSQL и QDRANT_URL на Qdrant
-uvicorn app.main:app --reload
+```text
+http://localhost:5173
 ```
 
-Для фронтенда: `cd frontend && npm install && npm run dev` (Vite проксирует
-`/api` на backend). Продакшен-сборка — `npm run build`.
+Swagger:
 
-## Аутентификация
-
-Регистрация и вход возвращают `access_token` (JWT) + профиль пользователя:
-
-```bash
-# Регистрация (email нормализуется в нижний регистр)
-curl -X POST http://localhost:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"secret123","password_confirm":"secret123"}'
-
-# Вход
-curl -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"secret123"}'
-
-# Далее токен подставляется во все запросы
-TOKEN="<access_token>"
-curl http://localhost:8000/api/auth/me -H "Authorization: Bearer $TOKEN"
+```text
+http://localhost:8000/docs
 ```
 
-## API
+## Тестирование
 
-| Метод  | Путь                            | Описание                           |
-| ------ | ------------------------------- | ---------------------------------- |
-| GET    | `/health`                       | Статус сервиса и зависимостей      |
-| POST   | `/api/auth/register`            | Регистрация → JWT                  |
-| POST   | `/api/auth/login`               | Вход → JWT                         |
-| GET    | `/api/auth/me`                  | Текущий пользователь               |
-| POST   | `/api/documents/upload`         | Загрузка PDF/TXT/DOCX + индексация |
-| GET    | `/api/documents`                | Список документов пользователя     |
-| GET    | `/api/documents/{id}/content`   | Извлечённый текст документа        |
-| POST   | `/api/documents/{id}/index`     | Повторная индексация документа     |
-| DELETE | `/api/documents/{id}`           | Удаление документа и его чанков    |
-| DELETE | `/api/documents`                | Очистить все документы пользователя|
-| POST   | `/api/search`                   | Семантический поиск по фрагментам  |
-| POST   | `/api/chat`                     | Вопрос по документам → ответ+источники |
-| GET    | `/api/chats`                    | Список чатов                        |
-| POST   | `/api/chats`                    | Создать чат                         |
-| GET    | `/api/chats/{chat_id}/messages`| Сообщения чата                      |
-| DELETE | `/api/chats/{chat_id}`          | Удалить чат                         |
+Backend тестируется против PostgreSQL + Qdrant.
 
-Все эндпоинты, кроме `/health` и регистрации/входа, являются приватными и
-разделяют данные между пользователями: каждый видит только свои документы,
-чаты и результаты поиска.
-
-При загрузке сервис проверяет расширение и содержимое (magic bytes),
-сохраняет исходный файл в volume `/data/uploads`, извлекает полный текст и
-сохраняет метаданные + текст в PostgreSQL. Затем текст автоматически
-разбивается на чанки, эмбеддится MiniLM (`all-MiniLM-L6-v2`) и индексируется
-в Qdrant. Ошибки индексации не ломают запись Document (логируются).
-Текст документа не возвращается в ответе.
-
-Пример загрузки:
-
-```bash
-TOKEN="<JWT от /api/auth/login>"
-curl -F "file=@report.pdf" http://localhost:8000/api/documents/upload \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Ответ (текст документа не отдаётся):
-
-```json
-{
-  "id": 1,
-  "filename": "79bab8b682ec424cb6469f85144bf29c.pdf",
-  "original_filename": "report.pdf",
-  "file_type": "pdf",
-  "file_size": 123456,
-  "content_length": 54231,
-  "created_at": "2026-08-08T08:52:56Z"
-}
-```
-
-Семантический поиск:
-
-```bash
-curl -X POST http://localhost:8000/api/search \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "какой бюджет на маркетинг", "limit": 5}'
-```
-
-Ответ — найденные чанки с `document_id`, `filename`, `chunk_index`,
-`text` и `score`. Индексация Qdrant пересоздаётся через
-`POST /api/documents/{id}/index` (сначала векторы удаляются, затем
-индексируются заново).
-
-Чат по документам:
-
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": 1, "question": "Какой бюджет на маркетинг?"}'
-```
-
-Ответ включает `answer` (сгенерирован через GigaChat) и `sources` — ссылки
-`document_id` / `filename` / `chunk_index` / `score`, по которым фронтенд
-открывает фрагмент в просмотрщике документа. Если релевантных фрагментов нет,
-вернётся честный ответ без вызова LLM и с пустым `sources`.
-
-Проверка Qdrant вручную:
-
-```bash
-curl http://localhost:6333/collections/document_chunks   # status, points_count, vector_size=384
-curl -X POST http://localhost:6333/collections/document_chunks/points/scroll \
-  -H "Content-Type: application/json" -d '{"limit": 5, "with_vector": false}'
-```
-
-## Фронтенд
-
-- Экран **входа / регистрации** — одна карточка с переключателем
-  «Вход / Регистрация», показ пароля, инлайн-ошибки.
-- После входа — чат слева (список чатов + документы + зона загрузки),
-  основное поле для вопросов, ответы с источниками и просмотрщик файлов
-  с подсветкой найденных фрагментов.
-- Кнопка «Выйти» в сайдбаре; JWT живёт в `localStorage`, при 401 токен
-  сбрасывается и показывается экран входа.
-- Светлая/тёмная тема (переключатель в сайдбаре).
-
-## Тесты
-
-Backend (`backend/tests`): pytest против живого стека (PostgreSQL + Qdrant):
+Запуск:
 
 ```bash
 docker compose exec backend pytest tests -q
 ```
 
-Проверяется: регистрация/вход/`/me`, полная изоляция данных между двумя
-пользователями (документы, поиск, чаты, источники), отклонение невалидных
-файлов, загрузка TXT/PDF/DOCX, появление Document в PostgreSQL и чанков в
-Qdrant, семантический поиск, (пере)индексация, удаление векторов,
-E2E-сценарий загрузка после логина.
+В текущем наборе:
 
-Frontend (`frontend/`): vitest + testing-library:
-
-```bash
-cd frontend
-npm install
-npm test
+```text
+49 passed
 ```
 
-Обычно — регрессионный тест на то, что загрузка документа после входа
-передаёт `Authorization: Bearer <token>`.
+Проверяются:
 
-## Следующие этапы
+* регистрация;
+* авторизация;
+* `/me`;
+* JWT;
+* изоляция пользователей;
+* документы;
+* chunks;
+* поиск;
+* hybrid retrieval;
+* reranking;
+* fallback reranker;
+* Qdrant;
+* индексация;
+* переиндексация;
+* удаление документов;
+* удаление vector points;
+* чаты;
+* sources;
+* загрузка PDF/DOCX/TXT;
+* E2E-сценарии.
 
-1. **OCR** — извлечение текста из сканов в PDF (Tesseract).
-2. **Учёт токенов** — запись `UsageLog` на каждый запрос к LLM.
-3. **SSO / проверка токенов** — `refresh`-токены и ротация секрета.
-4. **Админка** — управление пользователями, лимиты.
-5. **Улучшение RAG** — гибридный поиск (BM25 + векторы), переиспользование
-   эмбеддингов модели.
+## Конфигурация reranker
+
+Reranker можно включить через `.env`:
+
+```env
+RERANKER_ENABLED=true
+```
+
+Основные параметры:
+
+```env
+RERANKER_MODEL=...
+RERANKER_DEVICE=cpu
+RERANKER_CANDIDATES=30
+```
+
+При отключённом reranker используется обычный hybrid retrieval.
+
+При ошибке reranker система автоматически возвращается к hybrid-порядку.
+
+## Текущий MVP
+
+На данный момент ADA уже представляет собой полноценный многопользовательский RAG-сервис:
+
+```text
+Регистрация
+    ↓
+Авторизация
+    ↓
+Загрузка документов
+    ↓
+Индексация
+    ↓
+Hybrid Search
+    ↓
+Reranker
+    ↓
+RAG
+    ↓
+GigaChat
+    ↓
+Ответ + Sources
+    ↓
+История чата
+```
+
+## Roadmap
+
+### Следующий этап
+
+1. **OCR для сканированных PDF**
+
+   * Tesseract;
+   * определение PDF без текстового слоя;
+   * извлечение текста с изображений.
+
+2. **Учёт LLM usage**
+
+   * `UsageLog`;
+   * input/output tokens;
+   * статистика расходов;
+   * лимиты пользователя.
+
+3. **Production deployment**
+
+   * VPS;
+   * HTTPS;
+   * reverse proxy;
+   * production secrets;
+   * backups;
+   * monitoring.
+
+4. **Безопасность**
+
+   * refresh tokens;
+   * rotation;
+   * rate limiting;
+   * ограничения размера файлов;
+   * дополнительные security checks.
+
+5. **Админка**
+
+   * пользователи;
+   * лимиты;
+   * usage;
+   * статистика системы.
+
+6. **Монетизация**
+
+   * бесплатный beta-тариф;
+   * платные лимиты;
+   * учёт стоимости LLM;
+   * пользовательские тарифы.
+
+7. **Расширение возможностей AI**
+
+   * работа с метаданными документов;
+   * более сложные запросы по нескольким документам;
+   * голосовое управление;
+   * дополнительные инструменты для работы с документами.
+
+## Идея проекта
+
+ADA превращает обычное файловое хранилище в интеллектуальную систему работы со знаниями.
+
+Вместо:
+
+```text
+Открыть документ
+→ найти нужную страницу
+→ прочитать несколько абзацев
+→ сравнить документы
+```
+
+пользователь может спросить:
+
+```text
+Какой рекламный бюджет на квартал?
+```
+
+и получить:
+
+```text
+Рекламный бюджет компании составляет 900000 рублей в квартал.
+
+Sources:
+Tech_learn.pdf — chunk 5
+```
+
+Главная цель ADA — сделать работу с большими наборами документов максимально похожей на обычный разговор с AI, сохраняя при этом привязку ответов к исходным документам.
