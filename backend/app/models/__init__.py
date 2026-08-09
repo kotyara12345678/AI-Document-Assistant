@@ -1,6 +1,7 @@
+from app.models.chat import Chat
 from app.models.chat_message import ChatMessage, ChatSummary
 from app.models.document import Document
 from app.models.usage_log import UsageLog
 from app.models.user import User
 
-__all__ = ["User", "Document", "UsageLog", "ChatMessage", "ChatSummary"]
+__all__ = ["User", "Document", "UsageLog", "Chat", "ChatMessage", "ChatSummary"]

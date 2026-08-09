@@ -25,13 +25,30 @@ export interface SourceRef {
 }
 
 export interface ChatRequest {
+  chat_id?: number | null;
   question: string;
   document_id?: number | null;
 }
 
 export interface ChatResponse {
+  chat_id: number;
   answer: string;
   sources: SourceRef[];
+}
+
+export interface ChatOut {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MessageOut {
+  id: number;
+  chat_id: number;
+  role: string;
+  content: string;
+  created_at: string;
 }
 
 export interface SearchResultItem {

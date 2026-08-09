@@ -47,6 +47,7 @@ def _clean_qdrant():
 def _clean_db():
     """Isolate each test from documents/chat rows left by previous runs."""
     from app.database.session import SessionLocal
+    from app.models.chat import Chat
     from app.models.chat_message import ChatMessage, ChatSummary
     from app.models.document import Document
 
@@ -54,6 +55,7 @@ def _clean_db():
     try:
         db.query(ChatSummary).delete()
         db.query(ChatMessage).delete()
+        db.query(Chat).delete()
         db.query(Document).delete()
         db.commit()
     finally:
@@ -63,6 +65,7 @@ def _clean_db():
     try:
         db.query(ChatSummary).delete()
         db.query(ChatMessage).delete()
+        db.query(Chat).delete()
         db.query(Document).delete()
         db.commit()
     finally:
@@ -249,4 +252,130 @@ def test_history_rolling_summary(client, monkeypatch):
     assert answer_calls
     last = answer_calls[-1]
     assert last["summary"] is not None or len(last["history"] or []) <= 2
+
+
+def test_ai_prefix_uses_plain_gigachat_without_rag(client, monkeypatch):
+    """Messages starting with @ai bypass RAG retrieval and keep sources empty."""
+    marker = f"AIPR{uuid.uuid4().hex[:6]}"
+    text = (
+        f"Документ только для RAG {marker}. Бюджет 999999 рублей."
+    ) * 20
+    _upload(client, "ai_prefix_doc.txt", text.encode("utf-8"))
+
+    calls = []
+
+    def recording_gemini(
+        prompt, system_instruction=None, client=None, history=None, summary=None
+    ):
+        calls.append({"prompt": prompt, "history": history})
+        return "Прямой ответ без документов."
+
+    monkeypatch.setattr(gemini, "generate_answer", recording_gemini)
+
+    resp = client.post(
+        f"{API_PREFIX}/chat",
+        json={"question": f"@ai {marker} расскажи анекдот"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["answer"] == "Прямой ответ без документов."
+    assert data["sources"] == [], "@ai mode must not return RAG sources"
+
+    # The prompt must be the raw question (without @ai and without RAG context).
+    assert calls, "GigaChat should have been called"
+    assert calls[0]["prompt"] == f"{marker} расскажи анекдот"
+    assert "CONTEXT:" not in calls[0]["prompt"]
+
+
+def test_rag_still_runs_for_non_ai_messages(client, fake_gemini):
+    """Messages without @ai keep the RAG behaviour untouched."""
+    marker = f"RAGK{uuid.uuid4().hex[:6]}"
+    text = (
+        f"База знаний о транспорте {marker}. Грузовики стоят 2 миллиона."
+    ) * 20
+    _upload(client, "rag_still.txt", text.encode("utf-8"))
+
+    resp = client.post(
+        f"{API_PREFIX}/chat",
+        json={"question": f"сколько стоят грузовики {marker}"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["sources"], "RAG mode must still return sources"
+    assert "CONTEXT:" in fake_gemini["prompt"]
+
+
+def test_chats_crud_and_autotitle(client, fake_gemini):
+    """Create/list/messages/delete of chats + title from the first question."""
+    marker = f"CRUD{uuid.uuid4().hex[:6]}"
+    text = (f"Документ {marker}. Бюджет проекта 300000 рублей.") * 20
+    _upload(client, "crud_doc.txt", text.encode("utf-8"))
+
+    created = client.post(f"{API_PREFIX}/chats", json={"title": None})
+    assert created.status_code == 201, created.text
+    chat_id = created.json()["id"]
+
+    listed = client.get(f"{API_PREFIX}/chats").json()
+    assert any(c["id"] == chat_id for c in listed)
+    assert listed[0]["title"] == "Новый чат"
+
+    assert client.get(f"{API_PREFIX}/chats/{chat_id}/messages").json() == []
+
+    # First question names the chat.
+    question = f"какой бюджет проекта {marker}"
+    chat_resp = client.post(
+        f"{API_PREFIX}/chat",
+        json={"chat_id": chat_id, "question": question},
+    )
+    assert chat_resp.status_code == 200, chat_resp.text
+    assert chat_resp.json()["chat_id"] == chat_id
+
+    listed = client.get(f"{API_PREFIX}/chats").json()
+    target = next(c for c in listed if c["id"] == chat_id)
+    assert target["title"] == question
+
+    # Both turns persisted in the chat's message list.
+    msgs = client.get(f"{API_PREFIX}/chats/{chat_id}/messages").json()
+    assert len(msgs) == 2
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert all(m["chat_id"] == chat_id for m in msgs)
+
+    # Deleting the chat removes it and its messages.
+    del_resp = client.delete(f"{API_PREFIX}/chats/{chat_id}")
+    assert del_resp.status_code == 200
+    listed = client.get(f"{API_PREFIX}/chats").json()
+    assert all(c["id"] != chat_id for c in listed)
+    assert client.get(f"{API_PREFIX}/chats/{chat_id}/messages").status_code == 404
+
+
+def test_chat_history_scoped_to_chat(client, fake_gemini):
+    """Messages in one chat never leak into another chat's history."""
+    marker = f"SCOP{uuid.uuid4().hex[:6]}"
+    text = (f"Документ про корабли {marker}. Стоимость яхты 1000000 рублей.") * 20
+    _upload(client, "scope_doc.txt", text.encode("utf-8"))
+
+    chat_a = client.post(f"{API_PREFIX}/chats", json={}).json()["id"]
+    chat_b = client.post(f"{API_PREFIX}/chats", json={}).json()["id"]
+
+    resp = client.post(
+        f"{API_PREFIX}/chat",
+        json={"chat_id": chat_a, "question": f"сколько стоит яхта {marker}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    msgs_a = client.get(f"{API_PREFIX}/chats/{chat_a}/messages").json()
+    msgs_b = client.get(f"{API_PREFIX}/chats/{chat_b}/messages").json()
+    assert len(msgs_a) == 2
+    assert msgs_b == [], "Another chat must not see this conversation"
+
+    # The first chat only receives its own history as LLM context.
+    resp = client.post(
+        f"{API_PREFIX}/chat",
+        json={"chat_id": chat_a, "question": f"а сколько парусная лодка {marker}"},
+    )
+    assert resp.status_code == 200, resp.text
+    roles = [m["role"] for m in fake_gemini["history"]]
+    assert roles == ["user", "assistant"]
+    assert marker in fake_gemini["history"][0]["content"]
+
 

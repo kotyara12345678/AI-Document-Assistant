@@ -1,4 +1,11 @@
-import type { ChatRequest, ChatResponse, DocumentContent, DocumentOut } from "./types";
+import type {
+  ChatOut,
+  ChatRequest,
+  ChatResponse,
+  DocumentContent,
+  DocumentOut,
+  MessageOut,
+} from "./types";
 
 const BASE = "/api";
 
@@ -33,6 +40,16 @@ export async function uploadDocument(file: File): Promise<DocumentOut> {
   return handle<DocumentOut>(res);
 }
 
+export async function deleteDocument(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/documents/${id}`, { method: "DELETE" });
+  await handle<{ deleted: number; status: string }>(res);
+}
+
+export async function deleteAllDocuments(): Promise<void> {
+  const res = await fetch(`${BASE}/documents`, { method: "DELETE" });
+  await handle<{ deleted: number; status: string }>(res);
+}
+
 export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   const res = await fetch(`${BASE}/chat`, {
     method: "POST",
@@ -40,4 +57,28 @@ export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
     body: JSON.stringify(req),
   });
   return handle<ChatResponse>(res);
+}
+
+export async function fetchChats(): Promise<ChatOut[]> {
+  const res = await fetch(`${BASE}/chats`);
+  return handle<ChatOut[]>(res);
+}
+
+export async function createChat(title?: string): Promise<ChatOut> {
+  const res = await fetch(`${BASE}/chats`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title ?? null }),
+  });
+  return handle<ChatOut>(res);
+}
+
+export async function deleteChat(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/chats/${id}`, { method: "DELETE" });
+  await handle<{ deleted: number; status: string }>(res);
+}
+
+export async function fetchChatMessages(id: number): Promise<MessageOut[]> {
+  const res = await fetch(`${BASE}/chats/${id}/messages`);
+  return handle<MessageOut[]>(res);
 }

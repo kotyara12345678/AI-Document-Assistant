@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base
 
 if TYPE_CHECKING:
+    from app.models.chat import Chat
     from app.models.chat_message import ChatMessage, ChatSummary
     from app.models.document import Document
     from app.models.usage_log import UsageLog
@@ -33,6 +34,9 @@ class User(Base):
     )
     chat_summary: Mapped["ChatSummary | None"] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    chats: Mapped[list["Chat"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
