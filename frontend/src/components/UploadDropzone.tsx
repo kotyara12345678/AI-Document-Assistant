@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { DocumentOut } from "../types";
+import { uploadDocument } from "../api";
 
 interface UploadDropzoneProps {
   onUploaded: (doc: DocumentOut) => void;
@@ -17,14 +18,8 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
       const file = files[0];
       setBusy(true);
       try {
-        const form = new FormData();
-        form.append("file", file);
-        const res = await fetch("/api/documents/upload", { method: "POST", body: form });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.detail || `Upload failed (${res.status})`);
-        }
-        onUploaded((await res.json()) as DocumentOut);
+        const doc = await uploadDocument(file);
+        onUploaded(doc);
       } catch (err) {
         onError(err instanceof Error ? err.message : "Upload failed");
       } finally {

@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # --- CORS ---
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # --- Auth (JWT) ---
+    # Secret used to sign access tokens (HS256). MUST be overridden via the
+    # JWT_SECRET environment variable in real deployments; the value below is
+    # a development default only.
+    JWT_SECRET: str = "dev-secret-change-me"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
     # --- LLM (GigaChat, OAuth 2.0 client-credentials + OpenAI-compatible API) ---
     # Authorization: "Basic base64(GIGACHAT_CLIENT_ID:GIGACHAT_CLIENT_SECRET)"
     GIGACHAT_CLIENT_ID: str | None = None

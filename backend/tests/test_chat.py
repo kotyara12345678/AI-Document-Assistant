@@ -9,67 +9,14 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.services import gemini
 
 API_PREFIX = "/api"
 
 
-@pytest.fixture()
-def client():
-    with TestClient(app) as c:
-        yield c
-
-
 def _upload(client: TestClient, filename: str, content: bytes):
     files = {"file": (filename, content)}
     return client.post(f"{API_PREFIX}/documents/upload", files=files)
-
-
-@pytest.fixture(autouse=True)
-def _clean_qdrant():
-    from app.core.config import settings
-    from app.vector.client import get_qdrant_client
-
-    qclient = get_qdrant_client()
-    try:
-        qclient.delete_collection(settings.QDRANT_COLLECTION)
-    except Exception:
-        pass
-    yield
-    try:
-        qclient.delete_collection(settings.QDRANT_COLLECTION)
-    except Exception:
-        pass
-
-
-@pytest.fixture(autouse=True)
-def _clean_db():
-    """Isolate each test from documents/chat rows left by previous runs."""
-    from app.database.session import SessionLocal
-    from app.models.chat import Chat
-    from app.models.chat_message import ChatMessage, ChatSummary
-    from app.models.document import Document
-
-    db = SessionLocal()
-    try:
-        db.query(ChatSummary).delete()
-        db.query(ChatMessage).delete()
-        db.query(Chat).delete()
-        db.query(Document).delete()
-        db.commit()
-    finally:
-        db.close()
-    yield
-    db = SessionLocal()
-    try:
-        db.query(ChatSummary).delete()
-        db.query(ChatMessage).delete()
-        db.query(Chat).delete()
-        db.query(Document).delete()
-        db.commit()
-    finally:
-        db.close()
 
 
 @pytest.fixture()

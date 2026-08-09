@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import chat, chats, documents, health, search
+from app.api.routes import auth, chat, chats, documents, health, search
 from app.core.config import settings
 from app.services import indexing as indexing_service
 from app.vector import client as vector_client
@@ -48,6 +48,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(auth.router, prefix=f"{settings.API_PREFIX}/auth", tags=["auth"])
     app.include_router(documents.router, prefix=f"{settings.API_PREFIX}/documents", tags=["documents"])
     app.include_router(chat.router, prefix=f"{settings.API_PREFIX}/chat", tags=["chat"])
     app.include_router(chats.router, prefix=f"{settings.API_PREFIX}/chats", tags=["chats"])

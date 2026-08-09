@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatOut, ChatResponse, DocumentContent, DocumentOut, MessageOut, SourceRef } from "./types";
+import type { ChatOut, ChatResponse, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
 import {
   createChat,
   deleteAllDocuments,
@@ -9,10 +9,14 @@ import {
   fetchChats,
   fetchDocumentContent,
   fetchDocuments,
+  fetchMe,
+  getToken,
   sendChat,
+  setToken,
 } from "./api";
 import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
+import AuthScreen from "./components/AuthScreen";
 
 interface Message {
   id: number;
@@ -31,6 +35,8 @@ function nextLocalId(): number {
 }
 
 export default function App() {
+  const [user, setUser] = useState<UserOut | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [documents, setDocuments] = useState<DocumentOut[]>([]);
   const [chats, setChats] = useState<ChatOut[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
@@ -54,6 +60,42 @@ export default function App() {
     setNotice(msg);
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
+  }, []);
+
+  const logout = useCallback(() => {
+    setToken(null);
+    setUser(null);
+    setChats([]);
+    setMessages([]);
+    setDocuments([]);
+    setActiveChatId(null);
+    setError(null);
+    setNotice(null);
+    localStorage.removeItem("docsearch-active-chat");
+  }, []);
+
+  // Restore the session from a stored token, or show the auth screen.
+  useEffect(() => {
+    let cancelled = false;
+    if (!getToken()) {
+      setAuthChecking(false);
+      return;
+    }
+    fetchMe()
+      .then((me) => {
+        if (!cancelled) setUser(me);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setToken(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAuthChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -106,6 +148,7 @@ export default function App() {
 
   // Initial load: documents, chats and the last active chat.
   useEffect(() => {
+    if (!user) return;
     void loadDocuments();
     let cancelled = false;
     void (async () => {
@@ -144,7 +187,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadDocuments]);
+  }, [loadDocuments, user]);
 
   const newChat = useCallback(async () => {
     try {
@@ -284,6 +327,27 @@ export default function App() {
     [openDocument]
   );
 
+  if (authChecking) {
+    return (
+      <div className="auth">
+        <div className="auth__bg">
+          <span className="auth__blob auth__blob--1" />
+          <span className="auth__blob auth__blob--2" />
+          <span className="auth__blob auth__blob--3" />
+          <div className="auth__grid" />
+        </div>
+        <div className="auth__loading">
+          <div className="auth__spinner" />
+          <span>Загружаем сессию…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onAuthed={setUser} />;
+  }
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -299,6 +363,16 @@ export default function App() {
           >
             {theme === "dark" ? "☀️" : "🌙"}
           </button>
+          <button className="btn btn--logout" onClick={logout} title={`Выйти (${user.email})`}>
+            Выйти
+          </button>
+        </div>
+
+        <div className="sidebar__user">
+          <span className="sidebar__user-avatar">{user.email.slice(0, 1).toUpperCase()}</span>
+          <span className="sidebar__user-email" title={user.email}>
+            {user.email}
+          </span>
         </div>
 
         <div className="sidebar__section sidebar__section--chats">

@@ -1,45 +1,57 @@
 # AI Document Assistant
 
-Веб-сервис: пользователь загружает документы (PDF/DOCX), система индексирует их,
-а затем позволяет задавать вопросы по содержимому через AI (RAG).
+Веб-сервис: пользователь регистрируется, загружает документы (PDF/DOCX/TXT),
+система индексирует их, а затем позволяет задавать вопросы по содержимому
+через AI (RAG) — ответы формируются по найденным фрагментам документов с
+указанием источников.
 
-> Текущий статус: **фундамент MVP**. Загрузка файлов, хранение и базовые API
-> работают. Извлечение текста, векторизация и генерация ответов — следующие этапы.
+> Текущий статус: **рабочее ядро MVP**. Есть регистрация/вход (JWT, bcrypt),
+> загрузка и индексация файлов, семантический поиск и RAG-чат с ответами
+> GigaChat и ссылками на исходные фрагменты. Следующие этапы: OCR для сканов,
+> учёт токенов LLM и т.д. (см. конец файла).
 
 ## Архитектура
 
 ```
 ┌────────────┐     HTTP     ┌─────────────────────────────────────────────┐
-│  Frontend  │ ───────────▶ │                   Backend (FastAPI)         │
-└────────────┘              │  app/main.py → api/routes → services        │
-                            │       │                        │            │
+│  Frontend  │ ───────────▶ │              Backend (FastAPI)              │
+│  (React)   │              │  app/main.py → api/routes → services        │
+└────────────┘              │       │                        │            │
                             │       ▼                        ▼            │
                             │  database/session.py     vector/client.py   │
                             └───────┬────────────────────────┬────────────┘
                                     │                        │
                                     ▼                        ▼
                               ┌───────────┐            ┌──────────┐
-                              │ PostgreSQL │           │  Qdrant  │
-                              │ (метаданные│           │ (векторы)│
-                              │  документов│           └──────────┘
+                              │ PostgreSQL │            │  Qdrant  │
+                              │ (user,     │            │ (векторы │
+                              │  docs,     │            │  чанков) │
+                              │  chat)     │            └──────────┘
                               └───────────┘
 ```
 
 ### Слои приложения (`backend/app/`)
 
-| Директория   | Назначение                                                       |
-| ------------ | ---------------------------------------------------------------- |
-| `api/routes` | HTTP-эндпоинты (тонкие, только валидация + вызов сервисов)       |
-| `core`       | Конфигурация (`config.py`) и безопасность (`security.py`)        |
-| `database`   | Движок/Session (SQLAlchemy 2.0) и базовый класс моделей          |
-| `models`     | ORM-модели: `User`, `Document`, `UsageLog`                       |
-| `schemas`    | Pydantic-схемы (запросы/ответы API)                              |
-| `services`   | Бизнес-логика (загрузка, чат)                                    |
-| `vector`     | Клиент Qdrant и управление коллекцией                            |
+| Директория   | Назначение                                                        |
+| ------------ | ----------------------------------------------------------------- |
+| `api/routes` | HTTP-эндпоинты: `auth`, `documents`, `chat`, `chats`, `search`    |
+| `core`       | Конфигурация (`config.py`) и безопасность (`security.py`, JWT)    |
+| `database`   | Движок/Session (SQLAlchemy 2.0) и базовый класс моделей           |
+| `models`     | ORM-модели: `User`, `Document`, `DocumentChunk`, `Chat`, …        |
+| `schemas`    | Pydantic-схемы (запросы/ответы API)                               |
+| `services`   | Бизнес-логика: индексация, retrieval/rerank, генерация (GigaChat) |
+| `vector`     | Клиент Qdrant и управление коллекцией                             |
+| `scripts`    | Утилиты (например, разовые скрипты)                               |
 
-Миграции БД — [Alembic](backend/alembic). Пароли хэшируются через bcrypt
-(`core/security.py`). Аутентификация ещё не реализована — эндпоинты используют
-заглушку `get_current_user_id()`.
+Миграции БД — [Alembic](backend/alembic). Аутентификация: JWT (HS256,
+`core/security.py`), короткий токен на 7 дней (настраивается через
+`JWT_EXPIRE_MINUTES`). Пароли хэшируются через bcrypt. Все эндпоинты
+кроме `/health` и `/api/auth/register`/`/api/auth/login` требуют заголовок
+`Authorization: Bearer <token>`.
+
+Фронтенд — `frontend/` (React + Vite + TypeScript). Перед первым использованием
+показывается экран входа/регистрации; после входа JWT хранится в
+`localStorage` и подставляется во все API-запросы.
 
 ## Быстрый старт
 
@@ -49,38 +61,79 @@
 # 1. Подготовить конфигурацию
 cp backend/.env.example backend/.env
 
-# 2. Собрать и запустить (PostgreSQL + Qdrant + backend)
+# 2. Собрать и запустить (PostgreSQL + Qdrant + backend + frontend)
 docker compose up --build
 
 # 3. Применить миграции (в отдельном терминале)
 docker compose exec backend alembic upgrade head
+```
 
-# 4. Проверить
+Проверка:
+
+```bash
 curl http://localhost:8000/health
 ```
 
-Интерфейс API (Swagger): http://localhost:8000/docs
+- Фронтенд: http://localhost:5173
+- API-документация (Swagger): http://localhost:8000/docs
 
 ### Локальная разработка без Docker
 
 ```bash
 cd backend
 python -m venv .venv && .venv\Scripts\activate   # Windows
-pip install -r requirements.txt
-# задать DATABASE_URL на свой PostgreSQL и QDRANT_URL
+pip install -r requirements.txt -r requirements-dev.txt
+# задать DATABASE_URL на свой PostgreSQL и QDRANT_URL на Qdrant
 uvicorn app.main:app --reload
+```
+
+Для фронтенда: `cd frontend && npm install && npm run dev` (Vite проксирует
+`/api` на backend). Продакшен-сборка — `npm run build`.
+
+## Аутентификация
+
+Регистрация и вход возвращают `access_token` (JWT) + профиль пользователя:
+
+```bash
+# Регистрация (email нормализуется в нижний регистр)
+curl -X POST http://localhost:8000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"secret123","password_confirm":"secret123"}'
+
+# Вход
+curl -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"secret123"}'
+
+# Далее токен подставляется во все запросы
+TOKEN="<access_token>"
+curl http://localhost:8000/api/auth/me -H "Authorization: Bearer $TOKEN"
 ```
 
 ## API
 
-| Метод | Путь                   | Описание                               |
-| ----- | ---------------------- | -------------------------------------- |
-| GET   | `/health`              | Статус сервиса и зависимостей          |
-| POST  | `/api/documents/upload`| Загрузка PDF/TXT/DOCX + индексация     |
-| GET   | `/api/documents`       | Список документов пользователя         |
-| POST  | `/api/documents/{id}/index` | Повторная индексация документа     |
-| POST  | `/api/search`          | Семантический поиск по фрагментам      |
-| POST  | `/api/chat`            | Вопрос по документам (заглушка)        |
+| Метод  | Путь                            | Описание                           |
+| ------ | ------------------------------- | ---------------------------------- |
+| GET    | `/health`                       | Статус сервиса и зависимостей      |
+| POST   | `/api/auth/register`            | Регистрация → JWT                  |
+| POST   | `/api/auth/login`               | Вход → JWT                         |
+| GET    | `/api/auth/me`                  | Текущий пользователь               |
+| POST   | `/api/documents/upload`         | Загрузка PDF/TXT/DOCX + индексация |
+| GET    | `/api/documents`                | Список документов пользователя     |
+| GET    | `/api/documents/{id}/content`   | Извлечённый текст документа        |
+| POST   | `/api/documents/{id}/index`     | Повторная индексация документа     |
+| DELETE | `/api/documents/{id}`           | Удаление документа и его чанков    |
+| DELETE | `/api/documents`                | Очистить все документы пользователя|
+| POST   | `/api/search`                   | Семантический поиск по фрагментам  |
+| POST   | `/api/chat`                     | Вопрос по документам → ответ+источники |
+| GET    | `/api/chats`                    | Список чатов                        |
+| POST   | `/api/chats`                    | Создать чат                         |
+| GET    | `/api/chats/{chat_id}/messages`| Сообщения чата                      |
+| DELETE | `/api/chats/{chat_id}`          | Удалить чат                         |
+
+Все эндпоинты, кроме `/health` и регистрации/входа, являются приватными и
+разделяют данные между пользователями: каждый видит только свои документы,
+чаты и результаты поиска.
 
 При загрузке сервис проверяет расширение и содержимое (magic bytes),
 сохраняет исходный файл в volume `/data/uploads`, извлекает полный текст и
@@ -89,10 +142,12 @@ uvicorn app.main:app --reload
 в Qdrant. Ошибки индексации не ломают запись Document (логируются).
 Текст документа не возвращается в ответе.
 
-Пример запроса на загрузку:
+Пример загрузки:
 
 ```bash
-curl -F "file=@report.pdf" http://localhost:8000/api/documents/upload
+TOKEN="<JWT от /api/auth/login>"
+curl -F "file=@report.pdf" http://localhost:8000/api/documents/upload \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 Ответ (текст документа не отдаётся):
@@ -113,14 +168,29 @@ curl -F "file=@report.pdf" http://localhost:8000/api/documents/upload
 
 ```bash
 curl -X POST http://localhost:8000/api/search \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query": "какой бюджет на маркетинг", "limit": 5}'
 ```
 
 Ответ — найденные чанки с `document_id`, `filename`, `chunk_index`,
-`text` и `score`. Индексация Qdrant автоматически удаляется/повторяется через
+`text` и `score`. Индексация Qdrant пересоздаётся через
 `POST /api/documents/{id}/index` (сначала векторы удаляются, затем
 индексируются заново).
+
+Чат по документам:
+
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": 1, "question": "Какой бюджет на маркетинг?"}'
+```
+
+Ответ включает `answer` (сгенерирован через GigaChat) и `sources` — ссылки
+`document_id` / `filename` / `chunk_index` / `score`, по которым фронтенд
+открывает фрагмент в просмотрщике документа. Если релевантных фрагментов нет,
+вернётся честный ответ без вызова LLM и с пустым `sources`.
 
 Проверка Qdrant вручную:
 
@@ -130,36 +200,47 @@ curl -X POST http://localhost:6333/collections/document_chunks/points/scroll \
   -H "Content-Type: application/json" -d '{"limit": 5, "with_vector": false}'
 ```
 
-> Аутентификация пока не реализована: эндпоинты используют заглушку
-> `get_current_user_id()` (user_id=1). Чтобы загрузка работала, в БД должен
-> существовать пользователь с id=1:
-> `docker compose exec db psql -U docassistant -d docassistant -c "INSERT INTO users (email, password_hash) VALUES ('demo@example.com', 'demo');"`
+## Фронтенд
 
-Пример чата:
-
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"document_id": 1, "question": "Какой бюджет на маркетинг?"}'
-```
+- Экран **входа / регистрации** — одна карточка с переключателем
+  «Вход / Регистрация», показ пароля, инлайн-ошибки.
+- После входа — чат слева (список чатов + документы + зона загрузки),
+  основное поле для вопросов, ответы с источниками и просмотрщик файлов
+  с подсветкой найденных фрагментов.
+- Кнопка «Выйти» в сайдбаре; JWT живёт в `localStorage`, при 401 токен
+  сбрасывается и показывается экран входа.
+- Светлая/тёмная тема (переключатель в сайдбаре).
 
 ## Тесты
 
+Backend (`backend/tests`): pytest против живого стека (PostgreSQL + Qdrant):
+
 ```bash
-# dev-зависимости ставятся один раз
-docker compose exec -u root backend pip install -r requirements-dev.txt
 docker compose exec backend pytest tests -q
 ```
 
-Тесты проверяют: загрузку TXT/PDF/DOCX (201), отклонение битых/пустых
-файлов, появление Document в PostgreSQL, появление чанков в Qdrant,
-semantic search и соответствие найденного чанка нужному document_id,
-ручную (пере)индексацию и удаление векторов.
+Проверяется: регистрация/вход/`/me`, полная изоляция данных между двумя
+пользователями (документы, поиск, чаты, источники), отклонение невалидных
+файлов, загрузка TXT/PDF/DOCX, появление Document в PostgreSQL и чанков в
+Qdrant, семантический поиск, (пере)индексация, удаление векторов,
+E2E-сценарий загрузка после логина.
+
+Frontend (`frontend/`): vitest + testing-library:
+
+```bash
+cd frontend
+npm install
+npm test
+```
+
+Обычно — регрессионный тест на то, что загрузка документа после входа
+передаёт `Authorization: Bearer <token>`.
 
 ## Следующие этапы
 
-1. **Генерация ответов** — LLM-промпт по найденным фрагментам + источники.
-2. **OCR** — извлечение текста из сканов PDF (Tesseract).
-3. **Аутентификация** — JWT (замена `get_current_user_id`).
-4. **Frontend** — простая веб-версия (`frontend/`), затем опционально Electron.
-5. **Учёт токенов** — запись `UsageLog` на каждый запрос к LLM.
+1. **OCR** — извлечение текста из сканов в PDF (Tesseract).
+2. **Учёт токенов** — запись `UsageLog` на каждый запрос к LLM.
+3. **SSO / проверка токенов** — `refresh`-токены и ротация секрета.
+4. **Админка** — управление пользователями, лимиты.
+5. **Улучшение RAG** — гибридный поиск (BM25 + векторы), переиспользование
+   эмбеддингов модели.

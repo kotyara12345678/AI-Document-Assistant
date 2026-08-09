@@ -1,10 +1,11 @@
-"""E2E tests for the document → chunks → embeddings → Qdrant → search pipeline.
+﻿"""E2E tests for the document → chunks → embeddings → Qdrant → search pipeline.
 
 Run inside the backend container against the live stack:
     docker compose exec backend pytest -q
 """
 
 import io
+import os
 import uuid
 
 import httpx
@@ -17,14 +18,28 @@ from app.database.session import SessionLocal
 from app.models.document import Document
 from app.vector.client import delete_document_vectors, get_qdrant_client
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8000")
 API_PREFIX = settings.API_PREFIX
-USER_ID = 1  # matches get_current_user_id() stub
+
+TEST_PASSWORD = "test-pass-123"
 
 
 @pytest.fixture()
 def client():
     with httpx.Client(base_url=BASE_URL, timeout=120) as c:
+        email = f"u{uuid.uuid4().hex[:10]}@example.com"
+        resp = c.post(
+            f"{API_PREFIX}/auth/register",
+            json={
+                "email": email,
+                "password": TEST_PASSWORD,
+                "password_confirm": TEST_PASSWORD,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        c.headers.update({"Authorization": f"Bearer {data['access_token']}"})
+        c._auth_user_id = data["user"]["id"]
         yield c
 
 
@@ -89,8 +104,8 @@ def _upload(client: httpx.Client, filename: str, content: bytes):
     return client.post(f"{API_PREFIX}/documents/upload", files=files)
 
 
-def _document_ids_in_db(db: Session) -> set[int]:
-    return {row[0] for row in db.query(Document.id).filter(Document.user_id == USER_ID).all()}
+def _document_ids_in_db(db: Session, user_id: int) -> set[int]:
+    return {row[0] for row in db.query(Document.id).filter(Document.user_id == user_id).all()}
 
 
 def _qdrant_point_ids(document_id: int) -> list:
@@ -114,7 +129,7 @@ def test_upload_txt(client, db_session):
     data = resp.json()
     assert data["file_type"] == "txt"
     assert data["content_length"] == len(content)
-    assert data["id"] in _document_ids_in_db(db_session)
+    assert data["id"] in _document_ids_in_db(db_session, client._auth_user_id)
 
 
 def test_upload_pdf(client, db_session):
@@ -124,7 +139,7 @@ def test_upload_pdf(client, db_session):
     data = resp.json()
     assert data["file_type"] == "pdf"
     assert data["file_size"] == len(content)
-    assert data["id"] in _document_ids_in_db(db_session)
+    assert data["id"] in _document_ids_in_db(db_session, client._auth_user_id)
 
 
 def test_upload_docx(client, db_session):
@@ -133,7 +148,7 @@ def test_upload_docx(client, db_session):
     assert resp.status_code == 201, resp.text
     data = resp.json()
     assert data["file_type"] == "docx"
-    assert data["id"] in _document_ids_in_db(db_session)
+    assert data["id"] in _document_ids_in_db(db_session, client._auth_user_id)
 
 
 def test_upload_invalid_extension(client):
