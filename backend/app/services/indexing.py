@@ -20,13 +20,45 @@ class IndexResult:
     chunks_indexed: int
 
 
+def _persist_chunks(document_id: int, chunks: list[Chunk]) -> None:
+    """Store the document's chunks in PostgreSQL for keyword (FTS) search.
+
+    Replaces any existing chunk rows for the document so re-indexing stays
+    idempotent.
+    """
+    if not chunks:
+        return
+    from app.database.session import SessionLocal
+    from app.models.document_chunk import DocumentChunk
+
+    db = SessionLocal()
+    try:
+        db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
+        db.add_all(
+            DocumentChunk(document_id=document_id, chunk_index=chunk.index, text=chunk.text)
+            for chunk in chunks
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
 def index_document(document: Document) -> IndexResult:
-    """Chunk, embed and store a document's vectors in Qdrant."""
+    """Chunk, embed and store a document's vectors in Qdrant.
+
+    The same chunks are also persisted to PostgreSQL so keyword (FTS) search
+    can run alongside the semantic one.
+    """
     chunks = chunk_text(document.content)
 
     if not chunks:
         logger.warning("Document %s has no chunks to index", document.id)
         return IndexResult(document_id=document.id, chunks_indexed=0)
+
+    try:
+        _persist_chunks(document.id, chunks)
+    except Exception:
+        logger.exception("Failed to persist chunks for document %s", document.id)
 
     vectors = embed_texts([c.text for c in chunks])
 

@@ -1,7 +1,16 @@
 from app.models.chat import Chat
 from app.models.chat_message import ChatMessage, ChatSummary
 from app.models.document import Document
+from app.models.document_chunk import DocumentChunk
 from app.models.usage_log import UsageLog
 from app.models.user import User
 
-__all__ = ["User", "Document", "UsageLog", "Chat", "ChatMessage", "ChatSummary"]
+__all__ = [
+    "User",
+    "Document",
+    "DocumentChunk",
+    "UsageLog",
+    "Chat",
+    "ChatMessage",
+    "ChatSummary",
+]
