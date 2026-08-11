@@ -21,7 +21,7 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
         const docs = await uploadDocuments(selected);
         docs.forEach((doc) => onUploaded(doc));
       } catch (err) {
-        onError(err instanceof Error ? err.message : "Upload failed");
+        onError(err instanceof Error ? err.message : "Не удалось загрузить файл");
       } finally {
         setBusy(false);
       }
@@ -31,7 +31,7 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
 
   return (
     <div
-      className={`dropzone ${dragging ? "dropzone--active" : ""} ${busy ? "dropzone--busy" : ""}`}
+      className={`dropzone ${dragging ? "dropzone--active" : ""} ${busy ? "dropzone--uploading" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -56,8 +56,12 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
         }}
       />
       <div className="dropzone__icon">⬆</div>
-      <div className="dropzone__title">{busy ? "Uploading..." : "Drag & drop documents here"}</div>
-      <div className="dropzone__hint">PDF, TXT, DOCX, Markdown or ODT — up to a few files at once, or click to browse</div>
+      <div className="dropzone__title">
+        {busy ? "Загрузка…" : "Перетащите документы сюда"}
+      </div>
+      <div className="dropzone__hint">
+        PDF, TXT, DOCX, Markdown или ODT — несколько файлов за раз или нажмите для выбора
+      </div>
     </div>
   );
 }

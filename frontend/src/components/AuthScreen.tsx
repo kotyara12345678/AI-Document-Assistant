@@ -52,22 +52,12 @@ export default function AuthScreen({ onAuthed }: Props) {
 
   return (
     <div className="auth">
-      <div className="auth__bg">
-        <span className="auth__blob auth__blob--1" />
-        <span className="auth__blob auth__blob--2" />
-        <span className="auth__blob auth__blob--3" />
-        <div className="auth__grid" />
-      </div>
-
       <form className="auth__card" onSubmit={submit}>
-        <div className="auth__brand">
-          <span className="auth__logo">📄</span>
-          <span className="auth__title">
-            Doc<span className="auth__title-accent">Search</span>
-          </span>
-        </div>
+        <div className="auth__brand">ADA</div>
         <p className="auth__subtitle">
-          {isRegister ? "Создайте аккаунт, чтобы хранить и искать свои документы" : "Войдите, чтобы продолжить работу с документами"}
+          {isRegister
+            ? "Создайте аккаунт, чтобы хранить и искать свои документы"
+            : "Войдите, чтобы продолжить работу с документами"}
         </p>
 
         <div className="auth__tabs">
@@ -87,22 +77,22 @@ export default function AuthScreen({ onAuthed }: Props) {
           </button>
         </div>
 
-        <label className="auth__field">
-          <span className="auth__label">Электронная почта</span>
-          <input
-            className="auth__input"
-            type="email"
-            required
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-          />
-        </label>
+        <div className="auth__form">
+          <label className="auth__field">
+            <span className="auth__label">Электронная почта</span>
+            <input
+              className="auth__input"
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+            />
+          </label>
 
-        <label className="auth__field">
-          <span className="auth__label">Пароль</span>
-          <div className="auth__password">
+          <div className="auth__field">
+            <span className="auth__label">Пароль</span>
             <input
               className="auth__input"
               type={showPassword ? "text" : "password"}
@@ -113,55 +103,58 @@ export default function AuthScreen({ onAuthed }: Props) {
               onChange={(e) => setPassword(e.target.value)}
               placeholder={isRegister ? "Минимум 6 символов" : "Введите пароль"}
             />
+            <div className="auth__field-actions">
+              <span />
+              <button
+                type="button"
+                className="auth__show-password"
+                onClick={() => setShowPassword((v) => !v)}
+                title={showPassword ? "Скрыть пароль" : "Показать пароль"}
+              >
+                {showPassword ? "Скрыть пароль" : "Показать пароль"}
+              </button>
+            </div>
+          </div>
+
+          {isRegister && (
+            <label className="auth__field">
+              <span className="auth__label">Повторите пароль</span>
+              <input
+                className="auth__input"
+                type={showPassword ? "text" : "password"}
+                required
+                minLength={6}
+                autoComplete="new-password"
+                value={passwordConfirm}
+                onChange={(e) => setPasswordConfirm(e.target.value)}
+                placeholder="Ещё раз тот же пароль"
+              />
+            </label>
+          )}
+
+          {error && <div className="auth__error">{error}</div>}
+
+          <button className="auth__submit" type="submit" disabled={busy}>
+            {busy ? (
+              <span className="auth__spinner" />
+            ) : isRegister ? (
+              "Создать аккаунт"
+            ) : (
+              "Войти"
+            )}
+          </button>
+
+          <p className="auth__switch-hint">
+            {isRegister ? "Уже есть аккаунт?" : "Нет аккаунта?"}{" "}
             <button
               type="button"
-              className="auth__reveal"
-              onClick={() => setShowPassword((v) => !v)}
-              title={showPassword ? "Скрыть пароль" : "Показать пароль"}
+              className="auth__link"
+              onClick={() => switchMode(isRegister ? "login" : "register")}
             >
-              {showPassword ? "🙈" : "👁️"}
+              {isRegister ? "Войти" : "Зарегистрироваться"}
             </button>
-          </div>
-        </label>
-
-        {isRegister && (
-          <label className="auth__field">
-            <span className="auth__label">Повторите пароль</span>
-            <input
-              className="auth__input"
-              type={showPassword ? "text" : "password"}
-              required
-              minLength={6}
-              autoComplete="new-password"
-              value={passwordConfirm}
-              onChange={(e) => setPasswordConfirm(e.target.value)}
-              placeholder="Ещё раз тот же пароль"
-            />
-          </label>
-        )}
-
-        {error && <div className="auth__error">{error}</div>}
-
-        <button className="auth__submit" type="submit" disabled={busy}>
-          {busy ? (
-            <span className="auth__spinner" />
-          ) : isRegister ? (
-            "Создать аккаунт"
-          ) : (
-            "Войти"
-          )}
-        </button>
-
-        <p className="auth__switch-hint">
-          {isRegister ? "Уже есть аккаунт?" : "Нет аккаунта?"}{" "}
-          <button
-            type="button"
-            className="auth__link"
-            onClick={() => switchMode(isRegister ? "login" : "register")}
-          >
-            {isRegister ? "Войти" : "Зарегистрироваться"}
-          </button>
-        </p>
+          </p>
+        </div>
       </form>
     </div>
   );

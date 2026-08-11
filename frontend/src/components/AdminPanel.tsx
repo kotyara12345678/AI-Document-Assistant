@@ -8,9 +8,9 @@ interface Props {
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="admin-card">
-      <div className="admin-card__value">{value}</div>
-      <div className="admin-card__label">{label}</div>
+    <div className="stat-card">
+      <div className="stat-card__value">{value}</div>
+      <div className="stat-card__title">{label}</div>
     </div>
   );
 }
@@ -18,7 +18,7 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
 function StatusPill({ status }: { status: string }) {
   const ok = status === "ok";
   return (
-    <span className={`admin-pill ${ok ? "admin-pill--ok" : "admin-pill--bad"}`}>
+    <span className={`pill ${ok ? "pill--ok" : "pill--down"}`}>
       {ok ? "✓" : "✗"} {status}
     </span>
   );
@@ -35,7 +35,7 @@ export default function AdminPanel({ onBack }: Props) {
         if (!cancelled) setStats(data);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load stats");
+        if (!cancelled) setError(err instanceof Error ? err.message : "Не удалось загрузить статистику");
       });
     return () => {
       cancelled = true;
@@ -44,108 +44,117 @@ export default function AdminPanel({ onBack }: Props) {
 
   return (
     <main className="admin">
-      <div className="admin__header">
-        <button className="btn" onClick={onBack}>
-          ← Back to chat
-        </button>
-        <div>
-          <h1 className="admin__title">Admin Panel</h1>
-          <div className="admin__subtitle">Aggregated platform statistics — no document or chat content is shown here.</div>
+      <div className="admin__inner">
+        <div className="admin__header">
+          <button className="admin__back" onClick={onBack}>
+            ← К чату
+          </button>
+          <div>
+            <h1 className="admin__title">Панель администратора</h1>
+            <div className="admin__subtitle">
+              Сводная статистика платформы — содержимое документов и чатов здесь не отображается.
+            </div>
+          </div>
         </div>
-      </div>
 
-      {error && (
-        <div className="banner banner--error">
-          {error} — the backend rejected your admin access (HTTP 401/403).
-        </div>
-      )}
-      {!error && !stats && <div className="admin__loading">Loading statistics…</div>}
-      {!error && stats && (
-        <div className="admin__body">
-          <section className="admin-section">
-            <h2 className="admin-section__title">Services</h2>
-            <div className="admin-row">
-              <StatusPill status={stats.services.database} />
-              <span>database</span>
-              <StatusPill status={stats.services.qdrant} />
-              <span>vector search</span>
-              <StatusPill status={stats.services.status} />
-              <span>overall</span>
-            </div>
-          </section>
-
-          <section className="admin-section">
-            <h2 className="admin-section__title">Users</h2>
-            <div className="admin-grid">
-              <StatCard label="Total users" value={stats.users.total} />
-              <StatCard label="Admins" value={stats.users.admins} />
-              <StatCard label="New (24h)" value={stats.users.new_last_24h} />
-            </div>
-          </section>
-
-          <section className="admin-section">
-            <h2 className="admin-section__title">Documents</h2>
-            <div className="admin-grid">
-              <StatCard label="Documents" value={stats.documents.total} />
-              <StatCard label="Index chunks" value={stats.documents.chunks} />
-              <StatCard label="Content chars" value={stats.documents.total_content_chars.toLocaleString()} />
-              <StatCard label="Uploaded (24h)" value={stats.documents.new_last_24h} />
-            </div>
-          </section>
-
-          <section className="admin-section">
-            <h2 className="admin-section__title">Chats</h2>
-            <div className="admin-grid">
-              <StatCard label="Conversations" value={stats.chats.total} />
-              <StatCard label="Messages" value={stats.chats.messages} />
-              <StatCard label="New (24h)" value={stats.chats.new_last_24h} />
-            </div>
-          </section>
-
-          <section className="admin-section">
-            <h2 className="admin-section__title">Requests</h2>
-            <div className="admin-grid">
-              <StatCard label="API requests" value={stats.requests.api_total} />
-              <StatCard label="LLM prompts" value={stats.requests.llm_requests} />
-              <StatCard label="Avg latency (ms)" value={stats.requests.average_latency_ms} />
-            </div>
-          </section>
-
-          <section className="admin-section">
-            <h2 className="admin-section__title">Tokens &amp; errors</h2>
-            <div className="admin-grid">
-              <StatCard label="Tokens used" value={stats.tokens.total_tokens_used} />
-              <StatCard label="HTTP errors" value={stats.errors.total} />
-              <StatCard label="4xx" value={stats.errors.status_buckets["4xx"] ?? 0} />
-              <StatCard label="5xx" value={stats.errors.status_buckets["5xx"] ?? 0} />
-            </div>
-          </section>
-
-          {stats.errors.recent.length > 0 && (
-            <section className="admin-section">
-              <h2 className="admin-section__title">Recent errors (paths only)</h2>
-              <table className="admin-table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Status</th>
-                    <th>Path</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.errors.recent.map((e, i) => (
-                    <tr key={i}>
-                      <td>{new Date(e.timestamp).toLocaleString()}</td>
-                      <td>{e.status}</td>
-                      <td>{e.path}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        {error && (
+          <div className="admin__error">
+            {error} — бэкенд отклонил доступ администратора (HTTP 401/403).
+          </div>
+        )}
+        {!error && !stats && <div className="admin__loading">Загружаем статистику…</div>}
+        {!error && stats && (
+          <div className="admin__body">
+            <section className="admin__section">
+              <h2 className="admin__section-title">Сервисы</h2>
+              <div className="admin-row">
+                <StatusPill status={stats.services.database} />
+                <span className="admin-row-label">база данных</span>
+                <StatusPill status={stats.services.qdrant} />
+                <span className="admin-row-label">векторный поиск</span>
+                <StatusPill status={stats.services.status} />
+                <span className="admin-row-label">общее состояние</span>
+              </div>
             </section>
-          )}
-        </div>
-      )}
+
+            <section className="admin__section">
+              <h2 className="admin__section-title">Пользователи</h2>
+              <div className="admin__stats-grid">
+                <StatCard label="Всего" value={stats.users.total} />
+                <StatCard label="Администраторы" value={stats.users.admins} />
+                <StatCard label="Новых за 24 ч" value={stats.users.new_last_24h} />
+              </div>
+            </section>
+
+            <section className="admin__section">
+              <h2 className="admin__section-title">Документы</h2>
+              <div className="admin__stats-grid">
+                <StatCard label="Документы" value={stats.documents.total} />
+                <StatCard label="Фрагментов в индексе" value={stats.documents.chunks} />
+                <StatCard
+                  label="Символов в содержимом"
+                  value={stats.documents.total_content_chars.toLocaleString("ru-RU")}
+                />
+                <StatCard label="Загружено за 24 ч" value={stats.documents.new_last_24h} />
+              </div>
+            </section>
+
+            <section className="admin__section">
+              <h2 className="admin__section-title">Чаты</h2>
+              <div className="admin__stats-grid">
+                <StatCard label="Диалоги" value={stats.chats.total} />
+                <StatCard label="Сообщения" value={stats.chats.messages} />
+                <StatCard label="Новых за 24 ч" value={stats.chats.new_last_24h} />
+              </div>
+            </section>
+
+            <section className="admin__section">
+              <h2 className="admin__section-title">Запросы</h2>
+              <div className="admin__stats-grid">
+                <StatCard label="API-запросы" value={stats.requests.api_total} />
+                <StatCard label="LLM-запросы" value={stats.requests.llm_requests} />
+                <StatCard label="Средняя задержка (мс)" value={stats.requests.average_latency_ms} />
+              </div>
+            </section>
+
+            <section className="admin__section">
+              <h2 className="admin__section-title">Токены и ошибки</h2>
+              <div className="admin__stats-grid">
+                <StatCard label="Использовано токенов" value={stats.tokens.total_tokens_used} />
+                <StatCard label="HTTP-ошибки" value={stats.errors.total} />
+                <StatCard label="4xx" value={stats.errors.status_buckets["4xx"] ?? 0} />
+                <StatCard label="5xx" value={stats.errors.status_buckets["5xx"] ?? 0} />
+              </div>
+            </section>
+
+            {stats.errors.recent.length > 0 && (
+              <section className="admin__section">
+                <h2 className="admin__section-title">Последние ошибки (только пути)</h2>
+                <table className="admin__errors-table">
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>Статус</th>
+                      <th>Путь</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.errors.recent.map((e, i) => (
+                      <tr key={i}>
+                        <td>{new Date(e.timestamp).toLocaleString("ru-RU")}</td>
+                        <td>
+                          <span className="admin__errors-count">{e.status}</span>
+                        </td>
+                        <td className="admin__errors-path">{e.path}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            )}
+          </div>
+        )}
+      </div>
     </main>
   );
 }

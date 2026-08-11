@@ -13,6 +13,7 @@ import {
   getToken,
   sendChat,
   setToken,
+  uploadDocuments,
 } from "./api";
 import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
@@ -33,6 +34,33 @@ let localMsgId = 0;
 function nextLocalId(): number {
   // Negative ids never collide with server-persisted message ids.
   return -(++localMsgId);
+}
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function fileIcon(fileType: string): string {
+  switch (fileType) {
+    case "pdf":
+      return "📕";
+    case "docx":
+      return "📘";
+    case "md":
+      return "📝";
+    default:
+      return "📄";
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function App() {
@@ -57,6 +85,7 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false);
 
   const noticeTimer = useRef<number | null>(null);
+  const composerFileRef = useRef<HTMLInputElement | null>(null);
 
   const flashNotice = useCallback((msg: string) => {
     setNotice(msg);
@@ -109,7 +138,7 @@ export default function App() {
     try {
       setDocuments(await fetchDocuments());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load documents");
+      setError(err instanceof Error ? err.message : "Не удалось загрузить документы");
     } finally {
       setDocsLoading(false);
     }
@@ -119,7 +148,7 @@ export default function App() {
     try {
       setChats(await fetchChats());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load chats");
+      setError(err instanceof Error ? err.message : "Не удалось загрузить чаты");
     }
   }, []);
 
@@ -140,7 +169,7 @@ export default function App() {
           }))
         );
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load messages");
+        setError(err instanceof Error ? err.message : "Не удалось загрузить сообщения");
       } finally {
         setMessagesLoading(false);
       }
@@ -181,7 +210,7 @@ export default function App() {
           localStorage.setItem("docsearch-active-chat", String(chat.id));
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load chats");
+        if (!cancelled) setError(err instanceof Error ? err.message : "Не удалось загрузить чаты");
       } finally {
         if (!cancelled) setChatsLoading(false);
       }
@@ -200,7 +229,7 @@ export default function App() {
       setMessages([]);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create chat");
+      setError(err instanceof Error ? err.message : "Не удалось создать чат");
     }
   }, []);
 
@@ -220,7 +249,7 @@ export default function App() {
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to delete chat");
+        setError(err instanceof Error ? err.message : "Не удалось удалить чат");
       }
     },
     [chats, activeChatId, selectChat]
@@ -232,7 +261,7 @@ export default function App() {
     try {
       setViewer(await fetchDocumentContent(id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load document content");
+      setError(err instanceof Error ? err.message : "Не удалось открыть содержимое документа");
       setViewer(null);
     } finally {
       setViewerLoading(false);
@@ -249,35 +278,48 @@ export default function App() {
       setDocuments((prev) => [doc, ...prev]);
       setError(null);
       void openDocument(doc.id);
-      flashNotice(`Document "${doc.original_filename}" uploaded and indexed.`);
+      flashNotice(`Документ «${doc.original_filename}» загружен и проиндексирован.`);
     },
     [openDocument, flashNotice]
   );
 
+  const uploadFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      try {
+        const docs = await uploadDocuments(Array.from(files));
+        docs.forEach((doc) => onUploaded(doc));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Не удалось загрузить документы");
+      }
+    },
+    [onUploaded]
+  );
+
   const removeDocument = useCallback(
     async (doc: DocumentOut) => {
-      if (!window.confirm(`Delete "${doc.original_filename}" and its index?`)) return;
+      if (!window.confirm(`Удалить «${doc.original_filename}» и его индекс?`)) return;
       try {
         await deleteDocument(doc.id);
         setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
         if (viewer?.id === doc.id) closeViewer();
-        flashNotice(`Document "${doc.original_filename}" deleted.`);
+        flashNotice(`Документ «${doc.original_filename}» удалён.`);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to delete document");
+        setError(err instanceof Error ? err.message : "Не удалось удалить документ");
       }
     },
     [viewer, closeViewer, flashNotice]
   );
 
   const clearAllDocuments = useCallback(async () => {
-    if (!window.confirm("Delete ALL documents and their indexes?")) return;
+    if (!window.confirm("Удалить ВСЕ документы и их индексы?")) return;
     try {
       await deleteAllDocuments();
       setDocuments([]);
       closeViewer();
-      flashNotice("All documents deleted.");
+      flashNotice("Все документы удалены.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete documents");
+      setError(err instanceof Error ? err.message : "Не удалось удалить документы");
     }
   }, [closeViewer, flashNotice]);
 
@@ -287,7 +329,7 @@ export default function App() {
       if (!trimmed || loading) return;
 
       if (activeChatId == null) {
-        setError("No active chat. Please create a chat first.");
+        setError("Нет активного чата. Сначала создайте чат.");
         return;
       }
 
@@ -311,7 +353,7 @@ export default function App() {
           {
             id: nextLocalId(),
             role: "assistant",
-            text: err instanceof Error ? err.message : "Something went wrong",
+            text: err instanceof Error ? err.message : "Что-то пошло не так",
             error: true,
           },
         ]);
@@ -332,12 +374,6 @@ export default function App() {
   if (authChecking) {
     return (
       <div className="auth">
-        <div className="auth__bg">
-          <span className="auth__blob auth__blob--1" />
-          <span className="auth__blob auth__blob--2" />
-          <span className="auth__blob auth__blob--3" />
-          <div className="auth__grid" />
-        </div>
         <div className="auth__loading">
           <div className="auth__spinner" />
           <span>Загружаем сессию…</span>
@@ -354,48 +390,50 @@ export default function App() {
     <div className="layout">
       <aside className="sidebar">
         <div className="sidebar__header">
-          <span className="sidebar__logo">📄</span>
-          <span className="sidebar__brand">
-            Doc<span className="sidebar__brand-accent">Search</span>
-          </span>
-          <button
-            className="theme-toggle"
-            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-          >
-            {theme === "dark" ? "☀️" : "🌙"}
-          </button>
-          <button className="btn btn--logout" onClick={logout} title={`Выйти (${user.email})`}>
-            Выйти
-          </button>
+          <span className="sidebar__brand">ADA</span>
+          <div className="sidebar__actions">
+            <button
+              className="theme-toggle"
+              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+              title={theme === "dark" ? "Переключить на светлую тему" : "Переключить на тёмную тему"}
+            >
+              {theme === "dark" ? "☀️" : "🌙"}
+            </button>
+            <button className="logout-btn" onClick={logout} title={`Выйти (${user.email})`}>
+              Выйти
+            </button>
+          </div>
         </div>
 
         <div className="sidebar__user">
           <span className="sidebar__user-avatar">{user.email.slice(0, 1).toUpperCase()}</span>
-          <span className="sidebar__user-email" title={user.email}>
-            {user.email}
-          </span>
+          <div className="sidebar__user-info">
+            <div className="sidebar__user-name" title={user.email}>
+              {user.email}
+            </div>
+            <div className="sidebar__user-meta">
+              {user.role === "admin" ? "Администратор" : "Пользователь"}
+            </div>
+          </div>
         </div>
 
         {user.role === "admin" && (
-          <button className="btn btn--admin" onClick={() => setShowAdmin((v) => !v)}>
-            {showAdmin ? "◀ Back to chat" : "⚙ Admin panel"}
-          </button>
-        )}
-
-        <div className="sidebar__section sidebar__section--chats">
-          <div className="sidebar__section-title-row">
-            <div className="sidebar__section-title">Chats</div>
-            <button className="btn btn--new-chat" onClick={() => void newChat()}>
-              ＋ New chat
+          <div className="sidebar__section">
+            <button className="btn--admin" onClick={() => setShowAdmin((v) => !v)}>
+              {showAdmin ? "◀ К чату" : "⚙ Админ-панель"}
             </button>
           </div>
-        </div>
-        <div className="sidebar__list sidebar__list--chats">
+        )}
+
+        <div className="sidebar__section sidebar__section--scroll">
+          <div className="sidebar__section-title">Чаты</div>
+          <button className="btn--new-chat" onClick={() => void newChat()}>
+            ＋ Новый чат
+          </button>
           {chatsLoading ? (
-            <div className="empty">Loading chats…</div>
+            <div className="empty">Загружаем чаты…</div>
           ) : chats.length === 0 ? (
-            <div className="empty">No chats yet.</div>
+            <div className="empty">Чатов пока нет.</div>
           ) : (
             chats.map((chat) => (
               <div
@@ -403,11 +441,9 @@ export default function App() {
                 className={`chat-item ${activeChatId === chat.id ? "chat-item--active" : ""}`}
                 onClick={() => void selectChat(chat.id)}
               >
-                <span className="chat-item__icon">💬</span>
-                <span className="chat-item__title">{chat.title}</span>
                 <button
                   className="chat-item__delete"
-                  title="Delete chat"
+                  title="Удалить чат"
                   onClick={(e) => {
                     e.stopPropagation();
                     void removeChat(chat.id);
@@ -415,27 +451,28 @@ export default function App() {
                 >
                   ✕
                 </button>
+                <span className="chat-item__title">{chat.title}</span>
+                <span className="chat-item__meta">{new Date(chat.updated_at).toLocaleDateString()}</span>
               </div>
             ))
           )}
         </div>
 
         <UploadDropzone onUploaded={onUploaded} onError={setError} />
-        <div className="sidebar__section">
+
+        <div className="sidebar__section sidebar__section--scroll">
           <div className="sidebar__section-title-row">
-            <div className="sidebar__section-title">Your documents</div>
+            <div className="sidebar__section-title">Документы</div>
             {documents.length > 0 && (
-              <button className="btn btn--clear" onClick={() => void clearAllDocuments()}>
-                Clear all
+              <button className="btn--link" onClick={() => void clearAllDocuments()}>
+                Очистить всё
               </button>
             )}
           </div>
-        </div>
-        <div className="sidebar__list">
           {docsLoading ? (
-            <div className="empty">Loading documents…</div>
+            <div className="empty">Загружаем документы…</div>
           ) : documents.length === 0 ? (
-            <div className="empty">No documents yet. Upload your first file.</div>
+            <div className="empty">Документов пока нет. Загрузите первый файл.</div>
           ) : (
             documents.map((doc) => (
               <div
@@ -443,18 +480,16 @@ export default function App() {
                 className={`doc-item ${viewer?.id === doc.id ? "doc-item--active" : ""}`}
                 onClick={() => void openDocument(doc.id)}
               >
-                <div className="doc-item__icon">
-                  {doc.file_type === "pdf" ? "📕" : doc.file_type === "docx" ? "📘" : doc.file_type === "md" ? "📝" : "📄"}
-                </div>
+                <div className="doc-item__icon">{fileIcon(doc.file_type)}</div>
                 <div className="doc-item__body">
-                  <div className="doc-item__name">{doc.original_filename}</div>
+                  <div className="doc-item__title">{doc.original_filename}</div>
                   <div className="doc-item__meta">
                     {doc.file_type.toUpperCase()} · {formatBytes(doc.file_size)}
                   </div>
                 </div>
                 <button
                   className="doc-item__delete"
-                  title="Delete document"
+                  title="Удалить документ"
                   onClick={(e) => {
                     e.stopPropagation();
                     void removeDocument(doc);
@@ -471,90 +506,134 @@ export default function App() {
       {showAdmin ? (
         <AdminPanel onBack={() => setShowAdmin(false)} />
       ) : (
-      <main className="chat">
-        <div className="chat__header">
-          <div className="chat__header-title">
-            {chats.find((c) => c.id === activeChatId)?.title ?? "Ask anything"}
+        <main className="chat">
+          <div className="chat__header">
+            <div className="chat__header-title">
+              {chats.find((c) => c.id === activeChatId)?.title ?? "Спросите о документах"}
+            </div>
+            <div className="chat__header-sub">
+              Поиск по {documents.length} {plural(documents.length, "документу", "документам", "документам")}
+            </div>
           </div>
-          <div className="chat__header-sub">Searches across all {documents.length} documents</div>
-        </div>
 
-        <div className="chat__messages">
-          {messagesLoading ? (
-            <div className="chat__empty">
-              <div className="chat__empty-icon">💬</div>
-              <div className="chat__empty-sub">Loading conversation…</div>
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="chat__empty">
-              <div className="chat__empty-icon">💬</div>
-              <div className="chat__empty-title">Ask a question in your own words</div>
-              <div className="chat__empty-sub">
-                Upload documents, then ask. Matched fragments are highlighted in the files.
+          <div className="chat__messages">
+            {messagesLoading ? (
+              <div className="chat__empty">
+                <div className="chat__empty-icon">💬</div>
+                <div className="chat__empty-sub">Загружаем переписку…</div>
               </div>
-            </div>
-          ) : (
-            messages.map((m) => (
-              <div key={m.id} className={`msg msg--${m.role}`}>
-                <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>{m.text}</div>
-                {m.sources && m.sources.length > 0 && (
-                  <div className="sources">
-                    <div className="sources__title">
-                      Sources · {m.sources.length} {m.sources.length === 1 ? "match" : "matches"} — click to view
+            ) : messages.length === 0 ? (
+              <div className="chat__empty">
+                <div className="chat__empty-icon">💬</div>
+                <div className="chat__empty-title">Задайте вопрос своими словами</div>
+                <div className="chat__empty-sub">
+                  Загрузите документы и задавайте вопросы. Найденные фрагменты подсвечиваются в файлах.
+                </div>
+              </div>
+            ) : (
+              messages.map((m) => (
+                <div key={m.id} className={`msg msg--${m.role}`}>
+                  <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>{m.text}</div>
+                  {m.sources && m.sources.length > 0 && (
+                    <div className="sources">
+                      <div className="sources__title">
+                        Источники · {m.sources.length}{" "}
+                        {plural(m.sources.length, "совпадение", "совпадения", "совпадений")} — нажмите, чтобы открыть
+                      </div>
+                      {m.sources.slice(0, 3).map((s, i) => (
+                        <button key={i} className="source" onClick={() => openSource(s)}>
+                          <div className="source__head">
+                            <span className="source__title">
+                              <span className="source__title-icon">{fileIcon(extOf(s.filename))}</span>
+                              <span className="source__title-text">{s.filename}</span>
+                            </span>
+                            <span className="source__score">{(s.score * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="source__meta">Фрагмент {s.chunk_index}</div>
+                          <div className="source__chunk">{s.text}</div>
+                        </button>
+                      ))}
                     </div>
-                    {m.sources.map((s, i) => (
-                      <button key={i} className="source" onClick={() => openSource(s)}>
-                        <span className="source__file">
-                          {s.filename}
-                          <span className="source__chunk">chunk {s.chunk_index}</span>
-                        </span>
-                        <span className="source__score">
-                          {(s.score * 100).toFixed(0)}% match
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                  )}
+                </div>
+              ))
+            )}
+            {loading && (
+              <div className="msg msg--assistant">
+                <div className="msg__bubble msg__bubble--typing">
+                  <span className="typing-dots">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                </div>
               </div>
-            ))
-          )}
-          {loading && (
-            <div className="msg msg--assistant">
-              <div className="msg__bubble msg__bubble--typing">
-                <span className="dot" />
-                <span className="dot" />
-                <span className="dot" />
-              </div>
+            )}
+          </div>
+
+          {notice && <div className="chat__banner chat__banner--notice">{notice}</div>}
+
+          {error && (
+            <div className="chat__banner chat__banner--error" onClick={() => setError(null)}>
+              {error}
             </div>
           )}
-        </div>
 
-        {notice && <div className="banner banner--ok">{notice}</div>}
-
-        {error && (
-          <div className="banner banner--error" onClick={() => setError(null)}>
-            {error}
-          </div>
-        )}
-
-        <form
-          className="chat__input"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void sendMessage(input);
-          }}
-        >
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask a question about your documents…"
-            disabled={loading}
-          />
-          <button type="submit" disabled={loading || !input.trim()}>
-            {loading ? "…" : "Send"}
-          </button>
-        </form>
-      </main>
+          <form
+            className="chat__composer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void sendMessage(input);
+            }}
+          >
+            <input
+              ref={composerFileRef}
+              type="file"
+              accept=".pdf,.txt,.docx,.md,.odt"
+              multiple
+              hidden
+              onChange={(e) => {
+                void uploadFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className="chat__attach"
+              onClick={() => composerFileRef.current?.click()}
+              title="Добавить документ"
+              aria-label="Добавить документ"
+            >
+              +
+            </button>
+            <textarea
+              className="chat__composer-input"
+              rows={1}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void sendMessage(input);
+                }
+              }}
+              placeholder="Задайте вопрос о документах…"
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              className="chat__send"
+              disabled={loading || !input.trim()}
+              aria-label="Отправить сообщение"
+            >
+              {loading ? "…" : "↑"}
+            </button>
+          </form>
+        </main>
       )}
 
       <FileViewer
@@ -567,8 +646,8 @@ export default function App() {
   );
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+function extOf(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  if (dot < 0) return "";
+  return filename.slice(dot + 1).toLowerCase();
 }
