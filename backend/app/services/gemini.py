@@ -11,10 +11,13 @@ Authentication uses client ID / client secret: the Authorization header is
 """
 
 import base64
+import json
 import logging
+import re
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -32,6 +35,76 @@ _token_issued_at: float = 0.0
 
 class GeminiError(RuntimeError):
     """Raised when the LLM call fails."""
+
+
+# Metadata fields the retrieval layer actually knows how to provide and that
+# the classifier may ask for. Anything else is silently dropped so the model
+# is never pushed to guess missing metadata.
+METADATA_FIELDS_ALLOWED: tuple[str, ...] = (
+    "original_filename",
+    "file_type",
+    "file_size",
+    "content_length",
+    "created_at",
+)
+
+
+@dataclass
+class MetadataDecision:
+    """What the LLM decided a question needs from document metadata."""
+
+    needs_metadata: bool = False
+    fields: list[str] = field(default_factory=list)
+    target_filename: str | None = None
+
+
+def _extract_json(raw: str) -> dict:
+    """Pull the first JSON object out of an LLM response (code fences ok)."""
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("No JSON object in metadata classifier response")
+    return json.loads(cleaned[start : end + 1])
+
+
+def _parse_metadata_decision(raw: str) -> MetadataDecision:
+    data = _extract_json(raw)
+    needs = bool(data.get("needs_metadata", False))
+    fields = [
+        item
+        for item in data.get("fields") or []
+        if isinstance(item, str) and item in METADATA_FIELDS_ALLOWED
+    ]
+    target = data.get("target_filename")
+    if not isinstance(target, str) or not target.strip():
+        target = None
+    else:
+        target = target.strip()
+    return MetadataDecision(needs_metadata=needs, fields=fields, target_filename=target)
+
+
+def classify_metadata_need(question: str, client=None) -> MetadataDecision:
+    """Ask the LLM whether `question` needs document metadata to be answered.
+
+    Returns a MetadataDecision. Any failure (missing credentials, upstream
+    error, unparseable JSON) degrades to a no-metadata decision, so the RAG
+    pipeline keeps working and never invents metadata.
+    """
+    if not settings.CHAT_METADATA_CLASSIFIER_ENABLED:
+        return MetadataDecision()
+    prompt = f"Decide what document metadata this question needs.\n\nQUESTION: {question}"
+    try:
+        raw = generate_answer(
+            prompt,
+            system_instruction=settings.CHAT_METADATA_CLASSIFIER_INSTRUCTION,
+            client=client,
+        )
+        return _parse_metadata_decision(raw)
+    except Exception:
+        logger.exception("Metadata classification failed; defaulting to no metadata")
+        return MetadataDecision()
 
 
 def _chat_url() -> str:

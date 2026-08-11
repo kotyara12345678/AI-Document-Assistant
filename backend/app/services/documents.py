@@ -24,22 +24,52 @@ def _validate_extension(filename: str) -> str:
     return ext
 
 
+def _sanitize_original_filename(filename: str | None) -> str:
+    """Keep only the file's basename and drop control characters.
+
+    The stored name is used for display, search and metadata only (the payload
+    is written to disk under a server-generated UUID), so this is defense in
+    depth: never let a client-chosen name carry path separators or control
+    characters anywhere it could be echoed back or sent to the LLM.
+    """
+    name = (filename or "untitled").replace("\\", "/").split("/")[-1].strip()
+    name = "".join(ch for ch in name if "\u0020" <= ch <= "\u007e" or ord(ch) > 0x7F)
+    return name or "untitled"
+
+
+def _read_upload_bounded(file: UploadFile) -> bytes:
+    """Read the upload in chunks, refusing early once it exceeds the limit.
+
+    Returns the full content when it fits, otherwise raises HTTP 413 without
+    having buffered an unbounded blob in memory.
+    """
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    blocks: list[bytes] = []
+    size = 0
+    while True:
+        block = file.file.read(1024 * 1024)
+        if not block:
+            break
+        size += len(block)
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File exceeds the {settings.MAX_UPLOAD_SIZE_MB} MB limit",
+            )
+        blocks.append(block)
+    return b"".join(blocks)
+
+
 def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
     """Persist an uploaded file, extract its text and store a Document record.
 
     The binary file is saved to the uploads volume; PostgreSQL stores only
     metadata and the extracted plain text.
     """
-    original_filename = file.filename or "untitled"
+    original_filename = _sanitize_original_filename(file.filename)
     file_type = _validate_extension(original_filename)
 
-    content = file.file.read()
-
-    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds the {settings.MAX_UPLOAD_SIZE_MB} MB limit",
-        )
+    content = _read_upload_bounded(file)
 
     if len(content) == 0:
         raise HTTPException(
@@ -84,6 +114,28 @@ def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
         logger.exception("Indexing failed for document %s", document.id)
 
     return document
+
+
+def store_uploads(files: list[UploadFile], user_id: int, db: Session) -> list[Document]:
+    """Persist several uploaded files in a single request.
+
+    Enforces the per-request file count limit first and validates every
+    filename/extension before any file is persisted, so a bad file can never
+    leave earlier files of the same batch half-committed.
+    """
+    if len(files) > settings.MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Too many files: {len(files)}. "
+                f"Maximum is {settings.MAX_UPLOAD_FILES} files per upload request."
+            ),
+        )
+
+    for upload in files:
+        _validate_extension(_sanitize_original_filename(upload.filename))
+
+    return [store_upload(upload, user_id, db) for upload in files]
 
 
 def _validate_magic_bytes(content: bytes, declared_type: str) -> None:

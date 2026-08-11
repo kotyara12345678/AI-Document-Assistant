@@ -1,24 +1,25 @@
 ﻿"""E2E tests for the document → chunks → embeddings → Qdrant → search pipeline.
 
-Run inside the backend container against the live stack:
-    docker compose exec backend pytest -q
+Run inside the backend container: ``docker compose exec backend pytest -q``.
+Uses the in-process ASGI client so it exercises the full app (routers,
+middleware, services) against the dedicated test storage — the live database
+and Qdrant collection are never touched.
 """
 
 import io
-import os
 import uuid
 
-import httpx
 import pytest
 from docx import Document as DocxDocument
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.database.session import SessionLocal
+from app.main import app
 from app.models.document import Document
 from app.vector.client import delete_document_vectors, get_qdrant_client
 
-BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8000")
 API_PREFIX = settings.API_PREFIX
 
 TEST_PASSWORD = "test-pass-123"
@@ -26,7 +27,9 @@ TEST_PASSWORD = "test-pass-123"
 
 @pytest.fixture()
 def client():
-    with httpx.Client(base_url=BASE_URL, timeout=120) as c:
+    # In-process ASGI client so the whole pipeline runs against the dedicated
+    # test database/Qdrant collection (see conftest) — never the live one.
+    with TestClient(app) as c:
         email = f"u{uuid.uuid4().hex[:10]}@example.com"
         resp = c.post(
             f"{API_PREFIX}/auth/register",
@@ -99,7 +102,7 @@ def _make_docx_bytes() -> bytes:
     return buf.getvalue()
 
 
-def _upload(client: httpx.Client, filename: str, content: bytes):
+def _upload(client: TestClient, filename: str, content: bytes):
     files = {"file": (filename, content)}
     return client.post(f"{API_PREFIX}/documents/upload", files=files)
 
@@ -126,7 +129,7 @@ def test_upload_txt(client, db_session):
     content = "Просто тестовый текст в формате TXT с полезной информацией для поиска."
     resp = _upload(client, "sample.txt", content.encode("utf-8"))
     assert resp.status_code == 201, resp.text
-    data = resp.json()
+    data = resp.json()[0]
     assert data["file_type"] == "txt"
     assert data["content_length"] == len(content)
     assert data["id"] in _document_ids_in_db(db_session, client._auth_user_id)
@@ -136,7 +139,7 @@ def test_upload_pdf(client, db_session):
     content = _make_pdf_bytes()
     resp = _upload(client, "sample.pdf", content)
     assert resp.status_code == 201, resp.text
-    data = resp.json()
+    data = resp.json()[0]
     assert data["file_type"] == "pdf"
     assert data["file_size"] == len(content)
     assert data["id"] in _document_ids_in_db(db_session, client._auth_user_id)
@@ -146,7 +149,7 @@ def test_upload_docx(client, db_session):
     content = _make_docx_bytes()
     resp = _upload(client, "sample.docx", content)
     assert resp.status_code == 201, resp.text
-    data = resp.json()
+    data = resp.json()[0]
     assert data["file_type"] == "docx"
     assert data["id"] in _document_ids_in_db(db_session, client._auth_user_id)
 
@@ -170,7 +173,7 @@ def test_upload_triggers_indexing(client):
     ) * 20
     resp = _upload(client, "observatory.txt", text.encode("utf-8"))
     assert resp.status_code == 201, resp.text
-    document_id = resp.json()["id"]
+    document_id = resp.json()[0]["id"]
 
     points = _qdrant_point_ids(document_id)
     assert len(points) > 0, "No Qdrant points found for the uploaded document"
@@ -185,7 +188,7 @@ def test_search_returns_related_chunk(client):
     ) * 20
     resp = _upload(client, "quadcopter_budget.txt", text.encode("utf-8"))
     assert resp.status_code == 201, resp.text
-    document_id = resp.json()["id"]
+    document_id = resp.json()[0]["id"]
 
     search_resp = client.post(
         f"{API_PREFIX}/search",
@@ -206,7 +209,7 @@ def test_search_returns_related_chunk(client):
 def test_manual_reindex_endpoint(client):
     resp = _upload(client, "reindex.txt", ("восстановление потерянной индексации роботов " * 50).encode("utf-8"))
     assert resp.status_code == 201
-    document_id = resp.json()["id"]
+    document_id = resp.json()[0]["id"]
 
     delete_document_vectors(document_id)
     assert _qdrant_point_ids(document_id) == []
@@ -226,7 +229,7 @@ def test_reindex_missing_document_404(client):
 def test_delete_vectors(client):
     resp = _upload(client, "to_delete.txt", ("удаляемый документ " * 10).encode("utf-8"))
     assert resp.status_code == 201
-    document_id = resp.json()["id"]
+    document_id = resp.json()[0]["id"]
     assert len(_qdrant_point_ids(document_id)) > 0
 
     delete_document_vectors(document_id)

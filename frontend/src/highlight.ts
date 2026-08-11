@@ -3,24 +3,38 @@ export interface HighlightSegment {
   hit: boolean;
 }
 
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Split `text` into segments, marking every occurrence of any string in
- * `highlights` (case-insensitive). Overlapping matches are merged so each
- * character is highlighted at most once.
+ * `highlights` (case-insensitive).
+ *
+ * Matching is whitespace-tolerant: any run of whitespace inside a needle
+ * matches any run of whitespace inside `text`. A retrieved chunk is normalized
+ * to single spaces by the chunker, so without this it would never be found
+ * verbatim in the original document text with its line breaks/blank lines.
+ *
+ * Overlapping matches are merged so each character is highlighted at most once.
  */
 export function highlightSegments(text: string, highlights: string[]): HighlightSegment[] {
   const needles = highlights.map((h) => h.trim()).filter((h) => h.length > 0);
   if (needles.length === 0) return [{ text, hit: false }];
 
-  const lower = text.toLowerCase();
   const ranges: Array<[number, number]> = [];
 
   for (const needle of needles) {
-    const n = needle.toLowerCase();
-    let idx = lower.indexOf(n);
-    while (idx !== -1) {
-      ranges.push([idx, idx + needle.length]);
-      idx = lower.indexOf(n, idx + needle.length);
+    const pattern = escapeRegExp(needle).replace(/\s+/g, "\\s+");
+    const re = new RegExp(pattern, "gi");
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      if (match[0].length === 0) {
+        // Zero-width guard: never get stuck on an empty match.
+        re.lastIndex += 1;
+        continue;
+      }
+      ranges.push([match.index, match.index + match[0].length]);
     }
   }
 

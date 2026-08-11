@@ -1,7 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.ratelimit import (
+    AUTH_BURST_LIMIT,
+    AUTH_BURST_WINDOW,
+    FAILED_LOGIN_LIMIT,
+    FAILED_LOGIN_WINDOW,
+    throttle,
+)
 from app.core.security import (
     create_access_token,
     get_current_user_id,
@@ -13,6 +20,17 @@ from app.models.user import User
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 router = APIRouter()
+
+
+def _rate_limited(detail: str = "Too many attempts, please try again later") -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=detail,
+    )
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client is not None else "unknown"
 
 
 def _auth_response(user: User) -> AuthResponse:
@@ -29,8 +47,17 @@ def _find_user_by_email(db: Session, email: str) -> User | None:
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AuthResponse:
     """Create an account and return an access token for immediate use."""
+    if not throttle.allow(
+        f"auth:{_client_ip(request)}", AUTH_BURST_LIMIT, AUTH_BURST_WINDOW
+    ):
+        raise _rate_limited()
+
     if _find_user_by_email(db, payload.email) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -48,10 +75,27 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthRes
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def login(
+    payload: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AuthResponse:
     """Exchange valid credentials for an access token."""
+    if not throttle.allow(
+        f"auth:{_client_ip(request)}", AUTH_BURST_LIMIT, AUTH_BURST_WINDOW
+    ):
+        raise _rate_limited()
+
     user = _find_user_by_email(db, payload.email)
     if user is None or not verify_password(payload.password, user.password_hash):
+        # Count only the failed attempt, keyed by account+IP so that trying
+        # many wrong passwords on one account is throttled while a successful
+        # login never accumulates failures for that user.
+        fail_key = f"fail:{user.id if user else payload.email}:{_client_ip(request)}"
+        if not throttle.allow(fail_key, FAILED_LOGIN_LIMIT, FAILED_LOGIN_WINDOW):
+            raise _rate_limited(
+                "Too many failed login attempts for this account, try again later"
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

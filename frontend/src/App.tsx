@@ -17,6 +17,7 @@ import {
 import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
 import AuthScreen from "./components/AuthScreen";
+import AdminPanel from "./components/AdminPanel";
 
 interface Message {
   id: number;
@@ -48,11 +49,12 @@ export default function App() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [theme, setTheme] = useState<string>(() => localStorage.getItem(THEME_KEY) || "dark");
+  const [theme, setTheme] = useState<string>(() => localStorage.getItem(THEME_KEY) || "light");
 
   const [viewer, setViewer] = useState<DocumentContent | null>(null);
   const [viewerHighlights, setViewerHighlights] = useState<string[]>([]);
   const [viewerLoading, setViewerLoading] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const noticeTimer = useRef<number | null>(null);
 
@@ -375,6 +377,12 @@ export default function App() {
           </span>
         </div>
 
+        {user.role === "admin" && (
+          <button className="btn btn--admin" onClick={() => setShowAdmin((v) => !v)}>
+            {showAdmin ? "◀ Back to chat" : "⚙ Admin panel"}
+          </button>
+        )}
+
         <div className="sidebar__section sidebar__section--chats">
           <div className="sidebar__section-title-row">
             <div className="sidebar__section-title">Chats</div>
@@ -436,7 +444,7 @@ export default function App() {
                 onClick={() => void openDocument(doc.id)}
               >
                 <div className="doc-item__icon">
-                  {doc.file_type === "pdf" ? "📕" : doc.file_type === "docx" ? "📘" : "📄"}
+                  {doc.file_type === "pdf" ? "📕" : doc.file_type === "docx" ? "📘" : doc.file_type === "md" ? "📝" : "📄"}
                 </div>
                 <div className="doc-item__body">
                   <div className="doc-item__name">{doc.original_filename}</div>
@@ -460,6 +468,9 @@ export default function App() {
         </div>
       </aside>
 
+      {showAdmin ? (
+        <AdminPanel onBack={() => setShowAdmin(false)} />
+      ) : (
       <main className="chat">
         <div className="chat__header">
           <div className="chat__header-title">
@@ -544,6 +555,7 @@ export default function App() {
           </button>
         </form>
       </main>
+      )}
 
       <FileViewer
         doc={viewer}

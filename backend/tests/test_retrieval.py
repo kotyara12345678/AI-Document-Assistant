@@ -34,7 +34,7 @@ def test_keyword_finds_document_when_semantic_is_similar(client, user_id):
 
     resp = _upload(client, "target.txt", target_text.encode("utf-8"))
     assert resp.status_code == 201, resp.text
-    target_id = resp.json()["id"]
+    target_id = resp.json()[0]["id"]
     assert _upload(client, "distractor.txt", distractor_text.encode("utf-8")).status_code == 201
 
     chunks = retrieval.retrieve_context(
@@ -143,3 +143,29 @@ def test_reranker_falls_back_to_hybrid_order_on_error(client, user_id, monkeypat
     assert chunks, "Fallback must still return results"
     keys = [(c.source.document_id, c.source.chunk_index) for c in chunks]
     assert len(keys) == len(set(keys))
+
+
+def test_retrieve_context_restricts_to_selected_documents(client, user_id):
+    """Several document ids must restrict retrieval to exactly those documents,
+    merging results from all of them and never leaking a third one in."""
+    marker_a = f"MLTA{uuid.uuid4().hex[:6]}"
+    marker_b = f"MLTB{uuid.uuid4().hex[:6]}"
+    text_a = (f"Наноматериалы {marker_a}. Графен, электропроводность. ") * 20
+    text_b = (f"Наноматериалы {marker_b}. Углеродные трубки. ") * 20
+    decoy = (f"Наноматериалы LEAK{uuid.uuid4().hex[:6]}. Керамика. ") * 20
+
+    id_a = _upload(client, "multi_a.txt", text_a.encode("utf-8")).json()[0]["id"]
+    id_b = _upload(client, "multi_b.txt", text_b.encode("utf-8")).json()[0]["id"]
+    id_c = _upload(client, "multi_c.txt", decoy.encode("utf-8")).json()[0]["id"]
+
+    chunks = retrieval.retrieve_context(
+        question=f"наноматериалы {marker_a} {marker_b}",
+        user_id=user_id,
+        document_id=[id_a, id_b],
+        top_k=20,
+        min_score=0.0,
+    )
+    assert chunks, "Expected results from the selected documents"
+    doc_ids = {c.source.document_id for c in chunks}
+    assert {id_a, id_b} <= doc_ids, f"Both selected docs must appear, got {doc_ids}"
+    assert id_c not in doc_ids, "A document outside the selection must not leak in"

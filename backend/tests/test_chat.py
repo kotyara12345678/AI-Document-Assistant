@@ -47,7 +47,7 @@ def test_chat_returns_answer_with_sources(client, fake_gemini):
     ) * 20
     resp = _upload(client, "chat_doc.txt", text.encode("utf-8"))
     assert resp.status_code == 201, resp.text
-    document_id = resp.json()["id"]
+    document_id = resp.json()[0]["id"]
 
     chat_resp = client.post(
         f"{API_PREFIX}/chat",
@@ -77,7 +77,7 @@ def test_chat_with_document_filter(client, fake_gemini):
         f"Документ про корабли {marker_a}. Парусные яхты стоят 1000000 рублей."
     ) * 20
     resp_a = _upload(client, "ships.txt", text_a.encode("utf-8"))
-    doc_a = resp_a.json()["id"]
+    doc_a = resp_a.json()[0]["id"]
 
     text_b = (
         f"Документ про велосипеды. Горные велосипеды стоят 50000 рублей."
@@ -114,7 +114,7 @@ def test_chat_degraded_when_gemini_fails(client, monkeypatch):
     ) * 20
     resp = _upload(client, "degrade.txt", text.encode("utf-8"))
     assert resp.status_code == 201
-    document_id = resp.json()["id"]
+    document_id = resp.json()[0]["id"]
 
     def failing_gemini(prompt, system_instruction=None, client=None, history=None, summary=None):
         raise gemini.GeminiError("boom")
@@ -324,5 +324,35 @@ def test_chat_history_scoped_to_chat(client, fake_gemini):
     roles = [m["role"] for m in fake_gemini["history"]]
     assert roles == ["user", "assistant"]
     assert marker in fake_gemini["history"][0]["content"]
+
+
+def test_chat_with_multiple_document_filter(client, fake_gemini):
+    """Several document_ids scope the chat's retrieval to those documents and
+    never return sources from a document outside the selection."""
+    marker_a = f"MDCA{uuid.uuid4().hex[:6]}"
+    marker_b = f"MDCB{uuid.uuid4().hex[:6]}"
+    id_a = _upload(
+        client, "fin_a.txt", (f"Финансы {marker_a}. Выручка 10 миллионов.") * 20
+    ).json()[0]["id"]
+    id_b = _upload(
+        client, "fin_b.txt", (f"Финансы {marker_b}. Расходы 4 миллиона.") * 20
+    ).json()[0]["id"]
+    id_c = _upload(
+        client, "fin_c.txt", (f"Финансы MLEAK{uuid.uuid4().hex[:6]}. Прибыль.") * 20
+    ).json()[0]["id"]
+
+    chat_resp = client.post(
+        f"{API_PREFIX}/chat",
+        json={
+            "question": f"какая выручка и расходы {marker_a} {marker_b}",
+            "document_ids": [id_a, id_b],
+        },
+    )
+    assert chat_resp.status_code == 200, chat_resp.text
+    data = chat_resp.json()
+    assert data["sources"], "Expected sources from the selected documents"
+    doc_ids = {s["document_id"] for s in data["sources"]}
+    assert {id_a, id_b} <= doc_ids, f"Both selected docs expected, got {doc_ids}"
+    assert id_c not in doc_ids, "A document outside the selection must not leak in"
 
 

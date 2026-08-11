@@ -1,6 +1,7 @@
 export interface UserOut {
   id: number;
   email: string;
+  role: string;
   created_at: string;
 }
 
@@ -69,4 +70,27 @@ export interface SearchResultItem {
   chunk_index: number;
   text: string;
   score: number;
+}
+
+export interface AdminServiceStatus {
+  database: string;
+  qdrant: string;
+  status: string;
+}
+
+export interface AdminErrorEntry {
+  timestamp: string;
+  status: number;
+  path: string;
+}
+
+export interface AdminStats {
+  services: AdminServiceStatus;
+  users: { total: number; admins: number; new_last_24h: number };
+  documents: { total: number; chunks: number; total_content_chars: number; new_last_24h: number };
+  chats: { total: number; messages: number; new_last_24h: number };
+  requests: { api_total: number; llm_requests: number; average_latency_ms: number };
+  tokens: { total_tokens_used: number };
+  errors: { total: number; status_buckets: Record<string, number>; recent: AdminErrorEntry[] };
+  generated_at: string;
 }

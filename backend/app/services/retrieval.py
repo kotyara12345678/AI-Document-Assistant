@@ -35,10 +35,22 @@ class RetrievedChunk:
     text: str
 
 
+def _as_document_ids(
+    document_id: int | list[int] | None,
+) -> list[int] | None:
+    """Normalize a single id or a list of ids into one list (None = no filter)."""
+    if document_id is None:
+        return None
+    if isinstance(document_id, int):
+        return [document_id]
+    ids = list(document_id)
+    return ids or None
+
+
 def _semantic_search(
     question: str,
     user_id: int,
-    document_id: int | None,
+    document_ids: list[int] | None,
     top_k: int,
 ) -> list[RetrievedChunk]:
     """Embed the question and fetch the most relevant chunks from Qdrant."""
@@ -48,7 +60,7 @@ def _semantic_search(
             query_vector=query_vector,
             limit=top_k,
             user_id=user_id,
-            document_id=document_id,
+            document_ids=document_ids,
         )
     except Exception:
         logger.exception("Vector search failed; returning no semantic context")
@@ -79,7 +91,7 @@ def _semantic_search(
 def _keyword_search(
     question: str,
     user_id: int,
-    document_id: int | None,
+    document_ids: list[int] | None,
     top_k: int,
 ) -> list[dict]:
     """Rank chunks by PostgreSQL full-text search (ts_rank).
@@ -88,6 +100,9 @@ def _keyword_search(
     single word absent from a document does not suppress the whole match
     (plain/websearch_to_tsquery AND every token together). ts_rank then orders
     chunks by how many terms they cover.
+
+    ``document_ids`` restricts matches to those documents; None searches the
+    user's whole library.
 
     Returns raw rows {document_id, chunk_index, text, filename, rank}.
     """
@@ -109,9 +124,13 @@ def _keyword_search(
                 f"AND to_tsvector('{FTS_CONFIG}', dc.text) @@ q.query"
             )
             params: dict = {"question": question, "user_id": user_id}
-            if document_id is not None:
-                sql += " AND dc.document_id = :document_id"
-                params["document_id"] = document_id
+            if document_ids:
+                if len(document_ids) == 1:
+                    sql += " AND dc.document_id = :document_id"
+                    params["document_id"] = document_ids[0]
+                else:
+                    sql += " AND dc.document_id = ANY(:document_ids)"
+                    params["document_ids"] = document_ids
             sql += " ORDER BY rank DESC LIMIT :limit"
             params["limit"] = top_k
 
@@ -215,11 +234,16 @@ def _rerank(question: str, chunks: list[RetrievedChunk], top_k: int) -> list[Ret
 def retrieve_context(
     question: str,
     user_id: int,
-    document_id: int | None = None,
+    document_id: int | list[int] | None = None,
     top_k: int = 5,
     min_score: float = 0.3,
 ) -> list[RetrievedChunk]:
     """Run semantic + keyword retrieval in parallel and merge the results.
+
+    ``document_id`` may be a single id or a list of ids to search several
+    documents at once; when None (or empty) the search runs across the user's
+    whole library. Results from all selected documents are merged and go
+    through the same classic re-ranking step.
 
     When the reranker is enabled the merge step first produces a wider
     candidate pool (RERANKER_CANDIDATES) which is then re-ranked by the
@@ -231,6 +255,7 @@ def retrieve_context(
     the caller should answer honestly that no information was found instead of
     failing the request.
     """
+    document_ids = _as_document_ids(document_id)
     candidate_k = top_k
     rerank_enabled = settings.RERANKER_ENABLED
     if rerank_enabled:
@@ -238,10 +263,10 @@ def retrieve_context(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         semantic_future = executor.submit(
-            _semantic_search, question, user_id, document_id, candidate_k
+            _semantic_search, question, user_id, document_ids, candidate_k
         )
         keyword_future = executor.submit(
-            _keyword_search, question, user_id, document_id, candidate_k
+            _keyword_search, question, user_id, document_ids, candidate_k
         )
         semantic_chunks = semantic_future.result()
         keyword_rows = keyword_future.result()

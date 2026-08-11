@@ -9,6 +9,10 @@ class ChatRequest(BaseModel):
         description="Chat to run this turn in. When omitted, the most recently used chat is used (or a new one is created).",
     )
     document_id: int | None = Field(default=None, description="Limit the answer to a single document.")
+    document_ids: list[int] | None = Field(
+        default=None,
+        description="Limit the answer to several documents at once. Takes precedence over document_id.",
+    )
     question: str = Field(min_length=1, max_length=2000)
 
 

@@ -30,6 +30,7 @@
   --error-soft: rgba(248, 113, 113, 0.12);
   --ok-soft: rgba(52, 211, 153, 0.12);
   --scrollbar-hover: #33415f;
+  --pdf-bg: #474b52;
 
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
@@ -65,6 +66,7 @@
   --error-soft: rgba(220, 38, 38, 0.08);
   --ok-soft: rgba(5, 150, 105, 0.1);
   --scrollbar-hover: #c3cde1;
+  --pdf-bg: #e8eaed;
 }
 
 * {
@@ -652,12 +654,35 @@ body {
 /* ---------- File viewer ---------- */
 .viewer {
   width: 460px;
-  min-width: 460px;
+  min-width: 300px;
+  max-width: 720px;
+  position: relative;
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   backdrop-filter: blur(12px);
+}
+
+/* Drag handle on the left edge of the preview panel. The hit area is wider
+   than the visible line so it is easy to grab; the panel is clamped by the
+   min/max-width above and by the JS drag logic. */
+.viewer__resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.viewer__resize:hover,
+.viewer__resize--dragging {
+  background: rgba(99, 102, 241, 0.12);
+  box-shadow: inset 1px 0 0 var(--accent);
 }
 
 .viewer__header {
@@ -736,15 +761,7 @@ body {
   padding: 40px 20px;
 }
 
-.viewer__content {
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.viewer__content mark.hl {
+.viewer mark.hl {
   background: var(--hl-bg-strong);
   color: var(--hl-text);
   border-radius: 4px;
@@ -752,11 +769,359 @@ body {
   box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.35);
 }
 
+/* ---------- DOCX / TXT preview ---------- */
+
+/* Both keep text in a readable column instead of stretching across the whole
+   (resizable) panel, and wrap words normally so no line ends up one word. */
+.viewer__doc,
+.viewer__txt {
+  max-width: 68ch;
+  margin: 0 auto;
+  padding: 6px 4px 16px;
+  overflow-wrap: break-word;
+}
+
+.viewer__doc {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.viewer__doc-heading {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 0 0 10px;
+  color: var(--text);
+}
+
+.viewer__doc-paragraph {
+  margin: 0 0 14px;
+  white-space: pre-wrap;
+}
+
+.viewer__doc-list {
+  margin: 0 0 14px;
+  padding-left: 24px;
+}
+
+.viewer__doc-list-item {
+  margin: 0 0 6px;
+}
+
+.viewer__txt {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: normal;
+}
+
+/* ---------- Markdown preview ---------- */
+
+.viewer__md {
+  max-width: 68ch;
+  margin: 0 auto;
+  padding: 6px 4px 16px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.viewer__md > :first-child {
+  margin-top: 0;
+}
+
+.viewer__md > :last-child {
+  margin-bottom: 0;
+}
+
+.viewer__md h1,
+.viewer__md h2,
+.viewer__md h3,
+.viewer__md h4,
+.viewer__md h5,
+.viewer__md h6 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 1.3em 0 0.5em;
+  color: var(--text);
+}
+
+.viewer__md h1 {
+  font-size: 1.5em;
+}
+
+.viewer__md h2 {
+  font-size: 1.28em;
+}
+
+.viewer__md h3 {
+  font-size: 1.14em;
+}
+
+.viewer__md h4,
+.viewer__md h5,
+.viewer__md h6 {
+  font-size: 1em;
+}
+
+.viewer__md p {
+  margin: 0 0 1em;
+}
+
+.viewer__md ul,
+.viewer__md ol {
+  margin: 0 0 1em;
+  padding-left: 1.5em;
+}
+
+.viewer__md li {
+  margin: 0.25em 0;
+}
+
+.viewer__md li > ul,
+.viewer__md li > ol {
+  margin-bottom: 0;
+}
+
+.viewer__md a {
+  color: var(--accent-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.viewer__md a:hover {
+  color: var(--accent-hover);
+}
+
+.viewer__md strong {
+  font-weight: 700;
+}
+
+.viewer__md em {
+  font-style: italic;
+}
+
+.viewer__md code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--bg-soft-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.viewer__md pre {
+  margin: 0 0 1em;
+  padding: 12px 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.viewer__md pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.viewer__md blockquote {
+  margin: 0 0 1em;
+  padding: 0.2em 0 0.2em 1em;
+  border-left: 3px solid var(--accent);
+  color: var(--text-dim);
+}
+
+.viewer__md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+
+.viewer__md table {
+  border-collapse: collapse;
+  margin: 0 0 1em;
+  font-size: 13.5px;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.viewer__md th,
+.viewer__md td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.viewer__md th {
+  background: var(--bg-soft-2);
+  font-weight: 700;
+}
+
+.viewer__md tr:nth-child(even) td {
+  background: var(--bg-soft);
+}
+
+.viewer__md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+/* ---------- PDF viewer ---------- */
+
+.viewer__body--pdf {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.viewer__pdf {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.viewer__pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.viewer__pdf-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft-2);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.viewer__pdf-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.viewer__pdf-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.viewer__pdf-btn--active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: var(--bg-soft-2);
+}
+
+.viewer__pdf-scale {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  min-width: 44px;
+  text-align: center;
+}
+
+.viewer__pdf-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+}
+
+.viewer__pdf-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.viewer__pdf-input {
+  width: 56px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--chat-bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: center;
+}
+
+.viewer__pdf-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.viewer__pdf-current {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.viewer__pdf-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 12px;
+  background: var(--pdf-bg);
+}
+
+.viewer__pdf-page-wrap {
+  position: relative;
+  box-shadow: var(--shadow);
+  background: #fff;
+  max-width: 100%;
+}
+
+.viewer__pdf-page-wrap canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.viewer__pdf-page-num {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1200px) {
   .viewer {
     width: 380px;
-    min-width: 380px;
+    min-width: 300px;
+    max-width: 720px;
   }
 }
 
@@ -767,6 +1132,10 @@ body {
     width: min(480px, 100vw);
     z-index: 20;
     box-shadow: var(--shadow);
+  }
+
+  .viewer__resize {
+    display: none;
   }
 }
 
@@ -1175,6 +1544,148 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.btn--admin {
+  margin: 0 12px 10px;
+  width: calc(100% - 24px);
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.btn--admin:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* --- Admin panel --------------------------------------------------------- */
+
+.admin {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+  background: var(--chat-bg);
+}
+
+.admin__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+
+.admin__title {
+  font-size: 22px;
+  margin: 0 0 4px;
+  color: var(--text);
+}
+
+.admin__subtitle {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.admin__loading {
+  color: var(--text-dim);
+  padding: 40px 0;
+  text-align: center;
+}
+
+.admin__body {
+  display: grid;
+  gap: 20px;
+}
+
+.admin-section {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-soft-2);
+  padding: 16px 18px;
+}
+
+.admin-section__title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin: 0 0 12px;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.admin-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+}
+
+.admin-card__value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.admin-card__label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.admin-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-pill--ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.admin-pill--bad {
+  color: var(--error);
+  background: var(--error-soft);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+}
+
+.admin-table th {
+  color: var(--text-dim);
+  font-weight: 600;
 }
 
 @media (max-width: 520px) {

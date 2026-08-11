@@ -1,4 +1,5 @@
 import type {
+  AdminStats,
   AuthResponse,
   ChatOut,
   ChatRequest,
@@ -40,7 +41,7 @@ async function handle<T>(res: Response): Promise<T> {
     setToken(null);
   }
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
+    let detail = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
     try {
       const body = await res.json();
       if (body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
@@ -85,11 +86,11 @@ export async function fetchDocumentContent(id: number): Promise<DocumentContent>
   return handle<DocumentContent>(res);
 }
 
-export async function uploadDocument(file: File): Promise<DocumentOut> {
+export async function uploadDocuments(files: File[]): Promise<DocumentOut[]> {
   const form = new FormData();
-  form.append("file", file);
+  for (const file of files) form.append("file", file);
   const res = await fetch(`${BASE}/documents/upload`, { method: "POST", body: form, headers: authHeaders() });
-  return handle<DocumentOut>(res);
+  return handle<DocumentOut[]>(res);
 }
 
 export async function deleteDocument(id: number): Promise<void> {
@@ -133,4 +134,21 @@ export async function deleteChat(id: number): Promise<void> {
 export async function fetchChatMessages(id: number): Promise<MessageOut[]> {
   const res = await fetch(`${BASE}/chats/${id}/messages`, { headers: authHeaders() });
   return handle<MessageOut[]>(res);
+}
+
+export async function fetchAdminStats(): Promise<AdminStats> {
+  const res = await fetch(`${BASE}/admin/stats`, { headers: authHeaders() });
+  return handle<AdminStats>(res);
+}
+
+export function documentFileUrl(id: number): string {
+  return `${BASE}/documents/${id}/file`;
+}
+
+export function documentFileSource(id: number): { url: string; httpHeaders: Record<string, string> } {
+  const token = getToken();
+  return {
+    url: documentFileUrl(id),
+    httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+  };
 }

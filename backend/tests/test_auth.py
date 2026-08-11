@@ -149,7 +149,7 @@ def test_documents_are_isolated_between_users(client):
     text = (f"Конфиденциальный отчёт {marker}. Бюджет 7777777 рублей. ") * 30
     upload = _upload(client, f"secret_{marker}.txt", text.encode("utf-8"))
     assert upload.status_code == 201, upload.text
-    doc_id = upload.json()["id"]
+    doc_id = upload.json()[0]["id"]
 
     own = client.get(f"{API_PREFIX}/documents").json()
     assert any(d["id"] == doc_id for d in own)
@@ -178,7 +178,7 @@ def test_search_is_scoped_to_a_users_vectors(client):
     text = (f"Секрет проекта {marker}. Ставка 3000 рублей в час. ") * 30
     upload = _upload(client, "scoped.txt", text.encode("utf-8"))
     assert upload.status_code == 201, upload.text
-    doc_id = upload.json()["id"]
+    doc_id = upload.json()[0]["id"]
 
     own = client.post(f"{API_PREFIX}/search", json={"query": f"ставка {marker}", "limit": 5}).json()
     assert any(r["document_id"] == doc_id for r in own["results"])
@@ -198,7 +198,7 @@ def test_chat_retrieval_and_sources_are_scoped(client, register_user, monkeypatc
     text = (f"База знаний только для владельца {marker}. Шифр 4242. ") * 20
     upload = _upload(client, "owner.txt", text.encode("utf-8"))
     assert upload.status_code == 201, upload.text
-    doc_id = upload.json()["id"]
+    doc_id = upload.json()[0]["id"]
 
     calls = []
 

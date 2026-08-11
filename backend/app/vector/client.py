@@ -157,10 +157,15 @@ def search_vectors(
     limit: int = 5,
     user_id: int | None = None,
     document_id: int | None = None,
+    document_ids: list[int] | None = None,
     client: QdrantClient | None = None,
     collection: str | None = None,
 ) -> list[dict]:
-    """Semantic search. Returns list of {score, payload} dicts."""
+    """Semantic search. Returns list of {score, payload} dicts.
+
+    ``document_ids`` filters to any of the given documents and, when present,
+    takes precedence over ``document_id``.
+    """
     client = client or get_qdrant_client()
     name = collection or settings.QDRANT_COLLECTION
 
@@ -172,7 +177,14 @@ def search_vectors(
                 match=qmodels.MatchValue(value=user_id),
             )
         )
-    if document_id is not None:
+    if document_ids:
+        must.append(
+            qmodels.FieldCondition(
+                key="document_id",
+                match=qmodels.MatchAny(any=list(document_ids)),
+            )
+        )
+    elif document_id is not None:
         must.append(
             qmodels.FieldCondition(
                 key="document_id",

@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     # --- File uploads ---
     UPLOAD_DIR: str = "/data/uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
-    ALLOWED_EXTENSIONS: list[str] = ["pdf", "txt", "docx"]
+    MAX_UPLOAD_FILES: int = 5
+    ALLOWED_EXTENSIONS: list[str] = ["pdf", "txt", "docx", "md", "odt"]
 
     # --- CORS ---
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
@@ -50,6 +51,12 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "dev-secret-change-me"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
+    # --- Admin access ---
+    # Users with these (lowercased) emails are granted the "admin" role at
+    # startup. Access to /api/admin endpoints is enforced server-side by the
+    # role field — never by the UI alone.
+    ADMIN_EMAILS: list[str] = ["demo@example.com"]
 
     # --- LLM (GigaChat, OAuth 2.0 client-credentials + OpenAI-compatible API) ---
     # Authorization: "Basic base64(GIGACHAT_CLIENT_ID:GIGACHAT_CLIENT_SECRET)"
@@ -77,6 +84,37 @@ class Settings(BaseSettings):
     RERANKER_CANDIDATES: int = 30
     # Chunks are truncated to this many characters for re-ranking (cost control).
     RERANKER_MAX_CHARS: int = 1000
+
+    # --- Metadata-aware RAG ---
+    # Before retrieval the LLM is asked (cheap, bounded) whether the question
+    # actually needs document metadata (upload date, file name/size/type). When
+    # it does not, ONLY chunk text reaches the model — no metadata headers are
+    # injected. When it does, only the requested (available) fields are added,
+    # and a named document can be used to pre-filter retrieval.
+    CHAT_METADATA_CLASSIFIER_ENABLED: bool = True
+    CHAT_METADATA_CLASSIFIER_INSTRUCTION: str = (
+        "You decide whether a user question needs DOCUMENT METADATA to be "
+        "answered. Allowed metadata fields, with their meaning: "
+        "original_filename (name of the document file), "
+        "file_type (pdf/txt/docx), "
+        "file_size (size in bytes, integer), "
+        "content_length (length of extracted text in chars, integer), "
+        "created_at (upload date and time, ISO 8601). "
+        "Page numbers, authors, or any other fields are NOT available and "
+        "must never be requested. "
+        "A question needs metadata only when the answer actually depends on "
+        "those fields: e.g. 'когда загружен документ' (created_at), 'сколько "
+        "весит файл' (file_size), 'что это за файл' (original_filename, "
+        "file_type). "
+        "Content questions, explanations, summaries and 'на какой странице' "
+        "type questions need NO metadata (page info does not exist). "
+        "Set target_filename ONLY when the user explicitly asks to search "
+        "within one named document and retrieval should be limited to it; "
+        "otherwise null. Use the exact file name when given. "
+        "Respond with ONLY a JSON object of the form: "
+        '{"needs_metadata": bool, "fields": [<subset of allowed fields>], '
+        '"target_filename": <string or null>}. No other text.'
+    )
 
     # --- Chat history context (saved in PostgreSQL, sent to GigaChat) ---
     # Number of most recent messages sent verbatim to the LLM on each turn.

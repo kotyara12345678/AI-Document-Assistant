@@ -5,6 +5,7 @@ granted via signed short-lived JWT bearer tokens; every protected endpoint
 resolves the current user id from the token through ``get_current_user_id``.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -16,6 +17,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.database.session import get_db
 from app.models.user import User
+
+logger = logging.getLogger("app.security")
+
+if settings.JWT_SECRET == "dev-secret-change-me":
+    logger.warning(
+        "JWT_SECRET is set to the development default. Set a strong, unique "
+        "JWT_SECRET in production; otherwise tokens can be forged."
+    )
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -91,3 +100,27 @@ def get_current_user_id(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user_id
+
+
+ADMIN_ROLE = "admin"
+
+
+def get_current_admin(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    """FastAPI dependency: require the caller to be an authenticated admin.
+
+    Reuses the JWT authentication from ``get_current_user_id`` and adds a
+    server-side role check. Non-admins receive HTTP 403; unauthenticated or
+    unknown callers get HTTP 401 from the underlying auth dependency. The UI
+    only hides the admin panel — it is never trusted by itself.
+    """
+    user_id = get_current_user_id(credentials, db)
+    user = db.get(User, user_id)
+    if user is None or user.role != ADMIN_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+    return user

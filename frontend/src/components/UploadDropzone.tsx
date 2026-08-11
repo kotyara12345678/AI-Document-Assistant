@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { DocumentOut } from "../types";
-import { uploadDocument } from "../api";
+import { uploadDocuments } from "../api";
 
 interface UploadDropzoneProps {
   onUploaded: (doc: DocumentOut) => void;
@@ -15,11 +15,11 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
   const upload = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
-      const file = files[0];
+      const selected = Array.from(files);
       setBusy(true);
       try {
-        const doc = await uploadDocument(file);
-        onUploaded(doc);
+        const docs = await uploadDocuments(selected);
+        docs.forEach((doc) => onUploaded(doc));
       } catch (err) {
         onError(err instanceof Error ? err.message : "Upload failed");
       } finally {
@@ -47,13 +47,17 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.txt,.docx"
+        accept=".pdf,.txt,.docx,.md,.odt"
+        multiple
         hidden
-        onChange={(e) => void upload(e.target.files)}
+        onChange={(e) => {
+          void upload(e.target.files);
+          e.target.value = "";
+        }}
       />
       <div className="dropzone__icon">⬆</div>
-      <div className="dropzone__title">{busy ? "Uploading..." : "Drag & drop a document here"}</div>
-      <div className="dropzone__hint">PDF, TXT or DOCX — or click to browse</div>
+      <div className="dropzone__title">{busy ? "Uploading..." : "Drag & drop documents here"}</div>
+      <div className="dropzone__hint">PDF, TXT, DOCX, Markdown or ODT — up to a few files at once, or click to browse</div>
     </div>
   );
 }
