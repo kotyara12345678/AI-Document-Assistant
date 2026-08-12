@@ -1,0 +1,93 @@
+# CI/E2E compose stack.
+#
+# Self-contained (PostgreSQL + Qdrant + mocked GigaChat + backend + frontend on
+# one network) so GitHub Actions can exercise the REAL stack over HTTP without
+# touching the real GigaChat API. Images for backend/frontend are pre-built in
+# earlier workflow steps and injected via IMAGE_BACKEND / IMAGE_FRONTEND.
+#
+# Local run (from the repository root):
+#   IMAGE_BACKEND=ada-backend:test IMAGE_FRONTEND=ada-frontend:test \
+#     docker compose -f scripts/ci/docker-compose.ci.yml up --build -d --wait
+#   python scripts/ci/e2e_smoke.py
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: docassistant
+      POSTGRES_PASSWORD: docassistant
+      POSTGRES_DB: docassistant
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docassistant -d docassistant"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - ci_postgres:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.10.0
+    healthcheck:
+      test: ["CMD-SHELL", "perl -MIO::Socket::INET -e '$$s=IO::Socket::INET->new(PeerAddr=>\"127.0.0.1:6333\") or exit 1; print $$s \"GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\"; $$r=<$$s>; exit($$r =~ /200/?0:1)'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - ci_qdrant:/qdrant/storage
+
+  gigachat-mock:
+    build: .
+    ports:
+      - "18000:18000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:18000/', timeout=3)\""]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    image: ${IMAGE_BACKEND}
+    environment:
+      DATABASE_URL: postgresql+psycopg2://docassistant:docassistant@db:5432/docassistant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: document_chunks
+      GIGACHAT_BASE_URL: http://gigachat-mock:18000/api/v1
+      GIGACHAT_AUTH_URL: http://gigachat-mock:18000/api/v2/oauth
+      GIGACHAT_CLIENT_ID: ci
+      GIGACHAT_CLIENT_SECRET: ci
+      JWT_SECRET: ci-secret-change-me
+      UPLOAD_DIR: /data/uploads
+      HF_HOME: /data/hf
+      CORS_ORIGINS: '["http://localhost:8080"]'
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=3)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      gigachat-mock:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ci_uploads:/data/uploads
+      - ci_hf:/data/hf
+
+  frontend:
+    image: ${IMAGE_FRONTEND}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+volumes:
+  ci_postgres:
+  ci_qdrant:
+  ci_uploads:
+  ci_hf:

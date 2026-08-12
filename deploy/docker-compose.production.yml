@@ -1,0 +1,95 @@
+# Production deployment stack (single Docker Compose host).
+#
+# Deployed only by the manually-triggered deploy-production workflow. Ports of
+# the data stores bind only to 127.0.0.1 (never publicly exposed); the backend
+# is reachable only through the nginx frontend container (port 80) which
+# proxies /api and /api2 to the backend.
+#
+# To run ONLY the database (e.g. while a new backend starts):
+#   docker compose -p ada-production -f deploy/docker-compose.production.yml up -d db
+#
+# Full stack:
+#   docker compose -p ada-production -f deploy/docker-compose.production.yml up -d
+#
+# Configuration lives in:
+#   backend/.env          -> app settings + secrets (JWT_SECRET, GigaChat, ...)
+#   POSTGRES_PASSWORD     -> DB password (compose interpolation, optional)
+#   QDRANT_API_KEY        -> optional Qdrant API key (backend/.env)
+
+name: ada-production
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: docassistant
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docassistant}
+      POSTGRES_DB: docassistant
+    ports:
+      - "127.0.0.1:${DB_BIND_PORT:-65432}:5432"
+    volumes:
+      - production_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docassistant -d docassistant"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.10.0
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "127.0.0.1:${QDRANT_BIND_PORT:-6333}:6333"
+    volumes:
+      - production_qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "perl -MIO::Socket::INET -e '$$s=IO::Socket::INET->new(PeerAddr=>\"127.0.0.1:6333\") or exit 1; print $$s \"GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\"; $$r=<$$s>; exit($$r =~ /200/?0:1)'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: ${IMAGE_BACKEND:-ghcr.io/kotyara12345678/ai-document-assistant-backend:latest}
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://docassistant:${POSTGRES_PASSWORD:-docassistant}@db:5432/docassistant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: document_chunks
+      UPLOAD_DIR: /data/uploads
+      HF_HOME: /data/hf
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - production_uploads:/data/uploads
+      - production_hf:/data/hf
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=3)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  frontend:
+    image: ${IMAGE_FRONTEND:-ghcr.io/kotyara12345678/ai-document-assistant-frontend:latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+
+volumes:
+  production_postgres:
+  production_qdrant:
+  production_uploads:
+  production_hf:

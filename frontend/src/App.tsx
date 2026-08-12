@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatOut, ChatResponse, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
+import type { AgentToolCall, ChatOut, ChatResponse, CreatedDocument, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
 import {
   createChat,
   deleteAllDocuments,
   deleteChat,
   deleteDocument,
+  downloadDocument,
   fetchChatMessages,
   fetchChats,
   fetchDocumentContent,
@@ -19,13 +20,31 @@ import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
 import AuthScreen from "./components/AuthScreen";
 import AdminPanel from "./components/AdminPanel";
+import CopyableBlock, { extractCodeBlock } from "./codeBlock";
 
 interface Message {
   id: number;
   role: "user" | "assistant";
   text: string;
   sources?: SourceRef[];
+  steps?: AgentToolCall[];
+  createdDocuments?: CreatedDocument[];
   error?: boolean;
+}
+
+function describeToolCall(tc: AgentToolCall): string {
+  const a = tc.arguments || {};
+  switch (tc.name) {
+    case "search_documents":
+      return `Поиск по документам: «${String(a.query ?? "")}»`;
+    case "read_document":
+      return `Чтение документа #${a.document_id ?? "?"}` +
+        (a.offset ? ` (с ${a.offset} символа)` : "");
+    case "create_document":
+      return `Создание документа${a.output_format ? ` (${a.output_format})` : ""}`;
+    default:
+      return `Действие: ${tc.name}`;
+  }
 }
 
 const THEME_KEY = "docsearch-theme";
@@ -343,7 +362,14 @@ export default function App() {
         const data: ChatResponse = await sendChat({ chat_id: chatId, question: trimmed });
         setMessages((prev) => [
           ...prev,
-          { id: nextLocalId(), role: "assistant", text: data.answer, sources: data.sources },
+          {
+            id: nextLocalId(),
+            role: "assistant",
+            text: data.answer,
+            sources: data.sources,
+            steps: data.tool_calls,
+            createdDocuments: data.created_documents,
+          },
         ]);
         // The backend may have titled this chat after its first question.
         void refreshChats();
@@ -533,7 +559,40 @@ export default function App() {
             ) : (
               messages.map((m) => (
                 <div key={m.id} className={`msg msg--${m.role}`}>
-                  <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>{m.text}</div>
+                  <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>
+                    {extractCodeBlock(m.text) ? <CopyableBlock result={extractCodeBlock(m.text)!} /> : m.text}
+                  </div>
+                  {m.role === "assistant" && m.steps && m.steps.length > 0 && (
+                    <div className="agent-steps">
+                      <div className="agent-steps__title">Шаги нейросети</div>
+                      {m.steps.map((s, i) => (
+                        <div className="agent-steps__item" key={i}>
+                          <span className="agent-steps__index">{i + 1}.</span>
+                          {describeToolCall(s)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {m.role === "assistant" && m.createdDocuments && m.createdDocuments.length > 0 && (
+                    <div className="created-docs">
+                      <div className="created-docs__title">Созданные документы</div>
+                      {m.createdDocuments.map((d) => (
+                        <div className="created-doc" key={d.document_id}>
+                          <span className="created-doc__icon">{fileIcon(d.file_type)}</span>
+                          <span className="created-doc__name" title={d.filename}>
+                            {d.filename}
+                          </span>
+                          <button
+                            type="button"
+                            className="created-doc__btn"
+                            onClick={() => void downloadDocument(d.document_id, d.filename)}
+                          >
+                            Скачать
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {m.sources && m.sources.length > 0 && (
                     <div className="sources">
                       <div className="sources__title">

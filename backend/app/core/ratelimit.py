@@ -22,6 +22,9 @@ AUTH_BURST_WINDOW = 60  # seconds
 CHAT_BURST_LIMIT = 30
 CHAT_BURST_WINDOW = 60  # seconds
 
+AGENT_BURST_LIMIT = 30
+AGENT_BURST_WINDOW = 60  # seconds
+
 
 class RateLimiter:
     def __init__(self) -> None:

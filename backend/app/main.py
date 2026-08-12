@@ -5,7 +5,17 @@ import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import admin, auth, chat, chats, documents, health, search
+from app.api.routes import (
+    admin,
+    agent,
+    auth,
+    chat,
+    chats,
+    documents,
+    health,
+    ready,
+    search,
+)
 from app.core.config import settings
 from app.core.metrics import metrics
 from app.core.security import ADMIN_ROLE
@@ -82,12 +92,14 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(ready.router, prefix=f"{settings.API_PREFIX}", tags=["health"])
     app.include_router(auth.router, prefix=f"{settings.API_PREFIX}/auth", tags=["auth"])
     app.include_router(documents.router, prefix=f"{settings.API_PREFIX}/documents", tags=["documents"])
     app.include_router(chat.router, prefix=f"{settings.API_PREFIX}/chat", tags=["chat"])
     app.include_router(chats.router, prefix=f"{settings.API_PREFIX}/chats", tags=["chats"])
     app.include_router(search.router, prefix=f"{settings.API_PREFIX}/search", tags=["search"])
     app.include_router(admin.router, prefix=f"{settings.API_PREFIX}/admin", tags=["admin"])
+    app.include_router(agent.router, prefix=f"{settings.API_PREFIX}/agent", tags=["agent"])
 
     @app.middleware("http")
     async def _metrics_middleware(request, call_next):

@@ -1,0 +1,76 @@
+# Build the backend and frontend images and publish them to GHCR.
+#
+# Runs on: push to main and version tags (vX.Y.Z). Images are tagged:
+#   main-<sha> and latest (main),  or  vX.Y.Z and latest (tags).
+
+name: Docker publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-publish
+  cancel-in-progress: true
+
+env:
+  IMAGE_BACKEND: ghcr.io/kotyara12345678/ai-document-assistant-backend
+  IMAGE_FRONTEND: ghcr.io/kotyara12345678/ai-document-assistant-frontend
+
+jobs:
+  backend:
+    name: Build & push backend image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_BACKEND }}
+          tags: |
+            type=sha,prefix=main-,branch=main,format=long
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push
+        uses: ./.github/actions/docker-build
+        with:
+          image: ${{ env.IMAGE_BACKEND }}
+          context: backend
+          file: backend/Dockerfile
+          tags: ${{ steps.meta.outputs.tags }}
+          push: "true"
+          token: ${{ github.token }}
+
+  frontend:
+    name: Build & push frontend image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_FRONTEND }}
+          tags: |
+            type=sha,prefix=main-,branch=main,format=long
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push
+        uses: ./.github/actions/docker-build
+        with:
+          image: ${{ env.IMAGE_FRONTEND }}
+          context: frontend
+          file: frontend/Dockerfile
+          tags: ${{ steps.meta.outputs.tags }}
+          push: "true"
+          token: ${{ github.token }}

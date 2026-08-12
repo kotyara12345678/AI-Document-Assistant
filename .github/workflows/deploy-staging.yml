@@ -1,0 +1,207 @@
+﻿# Deploy to staging.
+#
+# Trigger: every push to main (auto) or manual dispatch. Builds the images from
+# main, pushes them to GHCR under a staging-<sha> tag, uploads the deployment
+# files + a generated backend/.env (from the `staging` environment secrets) to
+# the server and runs scripts/deploy/deploy.sh (db up -> migrations ->
+# full stack). Then runs the full HTTP E2E smoke against the live stack.
+#
+# Required environment configuration (`staging` environment + repository
+# secrets/vars):
+#   secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+#            JWT_SECRET, GIGACHAT_CLIENT_ID, GIGACHAT_CLIENT_SECRET,
+#            GIGACHAT_SCOPE, GIGACHAT_BASE_URL, GIGACHAT_AUTH_URL, GIGACHAT_MODEL
+#   secrets (optional): DEPLOY_PORT, QDRANT_API_KEY
+#   vars (optional): DEPLOY_APP_DIR, DEPLOY_BACKEND_PORT, DEPLOY_FRONTEND_PORT,
+#                    DEPLOY_PUBLIC_URL, CORS_ORIGINS, ADMIN_EMAILS, DEBUG
+
+name: Deploy staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+env:
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+  SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+  DEPLOY_APP_DIR: ${{ vars.DEPLOY_APP_DIR || '/opt/ada-staging' }}
+  BACKEND_PORT: ${{ vars.DEPLOY_BACKEND_PORT || '8000' }}
+  FRONTEND_PORT: ${{ vars.DEPLOY_FRONTEND_PORT || '5173' }}
+  IMAGE_TAG: staging-${{ github.sha }}
+  IMAGE_BACKEND: ghcr.io/kotyara12345678/ai-document-assistant-backend
+  IMAGE_FRONTEND: ghcr.io/kotyara12345678/ai-document-assistant-frontend
+
+jobs:
+  build:
+    name: Build staging images (from main)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & push backend image
+        uses: ./.github/actions/docker-build
+        with:
+          image: ${{ env.IMAGE_BACKEND }}
+          context: backend
+          file: backend/Dockerfile
+          tags: ${{ env.IMAGE_BACKEND }}:${{ env.IMAGE_TAG }}
+          push: "true"
+          token: ${{ github.token }}
+
+      - name: Build & push frontend image
+        uses: ./.github/actions/docker-build
+        with:
+          image: ${{ env.IMAGE_FRONTEND }}
+          context: frontend
+          file: frontend/Dockerfile
+          tags: ${{ env.IMAGE_FRONTEND }}:${{ env.IMAGE_TAG }}
+          push: "true"
+          token: ${{ github.token }}
+
+  deploy:
+    name: Deploy stack to staging server
+    runs-on: ubuntu-latest
+    needs: build
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          missing=()
+          [[ -n "${{ env.DEPLOY_HOST }}" ]] || missing+=("DEPLOY_HOST")
+          [[ -n "${{ env.DEPLOY_USER }}" ]] || missing+=("DEPLOY_USER")
+          [[ -n "${{ secrets.DEPLOY_SSH_KEY }}" ]] || missing+=("DEPLOY_SSH_KEY")
+          [[ -n "${{ secrets.JWT_SECRET }}" ]] || missing+=("JWT_SECRET")
+          [[ -n "${{ secrets.GIGACHAT_CLIENT_ID }}" ]] || missing+=("GIGACHAT_CLIENT_ID")
+          [[ -n "${{ secrets.GIGACHAT_CLIENT_SECRET }}" ]] || missing+=("GIGACHAT_CLIENT_SECRET")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "Missing staging secrets/vars: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Prepare SSH key
+        shell: bash
+        run: |
+          SSH_KEY_PATH="${RUNNER_TEMP}/deploy_key"
+          KEY="${{ secrets.DEPLOY_SSH_KEY }}"
+          if [[ "${KEY}" != "-----BEGIN"* ]]; then
+            KEY=$(printf '%s' "${KEY}" | sed -e 's/\\n/\n/g')
+          fi
+          install -d -m 700 "$(dirname "${SSH_KEY_PATH}")"
+          printf '%s\n' "${KEY}" > "${SSH_KEY_PATH}"
+          chmod 600 "${SSH_KEY_PATH}"
+          echo "ssh_key_path=${SSH_KEY_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Wait for SSH connectivity
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5)
+          ok=0
+          for i in $(seq 1 24); do
+            if ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" 'echo ok' 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          [[ "$ok" == "1" ]] || { echo "SSH to ${{ env.DEPLOY_HOST }}:${{ env.SSH_PORT }} failed"; exit 1; }
+
+      - name: Generate backend/.env from environment secrets
+        shell: bash
+        run: |
+          mkdir -p backend
+          cat > backend/.env <<'EOF'
+          APP_NAME=AI Document Assistant (staging)
+          APP_VERSION=${{ env.IMAGE_TAG }}
+          DEBUG=${{ vars.DEBUG || 'false' }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          GIGACHAT_CLIENT_ID=${{ secrets.GIGACHAT_CLIENT_ID }}
+          GIGACHAT_CLIENT_SECRET=${{ secrets.GIGACHAT_CLIENT_SECRET }}
+          GIGACHAT_SCOPE=${{ secrets.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS' }}
+          GIGACHAT_BASE_URL=${{ secrets.GIGACHAT_BASE_URL || 'https://gigachat.devices.sberbank.ru/api/v1' }}
+          GIGACHAT_AUTH_URL=${{ secrets.GIGACHAT_AUTH_URL || 'https://ngw.devices.sberbank.ru/api/v2/oauth' }}
+          GIGACHAT_MODEL=${{ secrets.GIGACHAT_MODEL || 'GigaChat' }}
+          QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }}
+          CORS_ORIGINS=${{ vars.CORS_ORIGINS || '["http://localhost:5173"]' }}
+          ADMIN_EMAILS=${{ vars.ADMIN_EMAILS || '[]' }}
+          RERANKER_ENABLED=false
+          EOF
+
+      - name: Upload deployment files
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          scp_cmd=(scp "${ssh_opts[@]}")
+          ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
+            "mkdir -p '${{ env.DEPLOY_APP_DIR }}/backend' '${{ env.DEPLOY_APP_DIR }}/scripts'"
+          "${scp_cmd[@]}" scripts/deploy/deploy.sh \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/deploy.sh"
+          "${scp_cmd[@]}" deploy/docker-compose.staging.yml \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/docker-compose.staging.yml"
+          "${scp_cmd[@]}" deploy/scripts/run_backend_migrations.sh \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/scripts/run_backend_migrations.sh"
+          "${scp_cmd[@]}" backend/.env \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/backend/.env"
+
+      - name: Run remote deploy (db up -> migrations -> full stack)
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
+            "chmod +x '${{ env.DEPLOY_APP_DIR }}/deploy.sh' '${{ env.DEPLOY_APP_DIR }}/scripts/run_backend_migrations.sh'
+             cd '${{ env.DEPLOY_APP_DIR }}'
+             APP_DIR='${{ env.DEPLOY_APP_DIR }}' \
+             COMPOSE_PROJECT=ada-staging \
+             COMPOSE_FILE=docker-compose.staging.yml \
+             IMAGE_BACKEND='${{ env.IMAGE_BACKEND }}:${{ env.IMAGE_TAG }}' \
+             IMAGE_FRONTEND='${{ env.IMAGE_FRONTEND }}:${{ env.IMAGE_TAG }}' \
+             ./deploy.sh"
+
+      - name: E2E smoke against live staging stack
+        shell: bash
+        run: |
+          public_url="${{ vars.DEPLOY_PUBLIC_URL }}"
+          if [[ -n "${public_url}" ]]; then
+            base_api="${public_url}"
+            base_backend="${public_url}"
+          else
+            base_api="http://${{ env.DEPLOY_HOST }}:${{ env.FRONTEND_PORT }}"
+            base_backend="http://${{ env.DEPLOY_HOST }}:${{ env.BACKEND_PORT }}"
+          fi
+          python3 scripts/ci/e2e_smoke.py --base-api "${base_api}" --base-backend "${base_backend}"
+
+      - name: Collect server logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
+            "cd '${{ env.DEPLOY_APP_DIR }}'
+             docker compose -p ada-staging -f docker-compose.staging.yml logs --no-color \
+             > deploy-logs.txt 2>&1 || true" || true
+          scp "${ssh_opts[@]}" \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/deploy-logs.txt" \
+            ./deploy-logs.txt || true
+
+      - name: Upload deploy logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-deploy-logs
+          path: deploy-logs.txt

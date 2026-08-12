@@ -25,8 +25,6 @@ from app.core.config import settings
 
 logger = logging.getLogger("app.gemini")
 
-AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-
 # In-memory token cache: {"token": str, "issued_at": float (unix ts), ...}
 _token_lock = threading.Lock()
 _token: str | None = None
@@ -128,7 +126,7 @@ def _fetch_access_token(client: httpx.Client) -> str:
     """Request a fresh access token via the OAuth client-credentials flow."""
     try:
         response = client.post(
-            AUTH_URL,
+            settings.GIGACHAT_AUTH_URL,
             headers={
                 "Authorization": _basic_auth_header(),
                 "RqUID": str(uuid.uuid4()),
@@ -184,30 +182,31 @@ def _build_messages(
     return messages
 
 
-def generate_answer(
-    prompt: str,
-    system_instruction: str | None = None,
+def chat_completion(
+    messages: list[dict],
     client=None,
-    history: list[dict[str, str]] | None = None,
-    summary: str | None = None,
-) -> str:
-    """Send a prompt to GigaChat and return the text answer.
+    tools: list[dict] | None = None,
+) -> dict:
+    """Send an OpenAI-compatible chat completion and return the assistant message.
 
-    `history` carries the most recent turns as [{"role", "content"}] messages
-    and `summary` is a compact rollup of older turns; together they provide
-    conversational context without sending the full history.
+    ``messages`` is the full message list (system / user / assistant / tool).
+    When ``tools`` is given, GigaChat function calling is enabled: the returned
+    message may carry a ``tool_calls`` array that the caller must execute and
+    feed back as ``role: "tool"`` messages.
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
     client = client or _create_client()
     token = _get_access_token(client)
 
-    payload = {
+    payload: dict = {
         "model": settings.GIGACHAT_MODEL,
         "temperature": settings.GIGACHAT_TEMPERATURE,
         "max_tokens": settings.GIGACHAT_MAX_TOKENS,
-        "messages": _build_messages(prompt, system_instruction, history, summary),
+        "messages": messages,
     }
+    if tools:
+        payload["tools"] = tools
 
     try:
         response = client.post(
@@ -226,11 +225,92 @@ def generate_answer(
         raise GeminiError(f"GigaChat request failed: {exc}") from exc
 
     try:
-        answer = data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise GeminiError("GigaChat returned an empty response") from exc
 
+
+def chat_with_functions(
+    messages: list[dict],
+    functions: list[dict] | None = None,
+    function_call: str = "auto",
+    functions_state_id: str | None = None,
+    client=None,
+) -> tuple[dict, str | None]:
+    """Send a chat completion with GigaChat's native function calling enabled.
+
+    The configured ``gigachat.devices.sberbank.ru`` API does not honour the
+    OpenAI ``tools`` array: it silently ignores it and answers as if no
+    functions existed. GigaChat's native protocol uses ``functions`` +
+    ``function_call`` instead, so this method speaks that protocol.
+
+    Returns ``(message, functions_state_id)``. The returned message carries a
+    ``function_call`` dict (``{"name", "arguments"}``) when the model wants to
+    call a function; the caller must execute it and feed the result back as a
+    ``role: "function"`` message. ``functions_state_id`` is an opaque state
+    token that GigaChat requires to be echoed back unchanged in every request
+    of the same tool-call turn.
+
+    Raises GeminiError on missing credentials, OAuth failure, or upstream error.
+    """
+    client = client or _create_client()
+    token = _get_access_token(client)
+
+    payload: dict = {
+        "model": settings.GIGACHAT_MODEL,
+        "temperature": settings.GIGACHAT_TEMPERATURE,
+        "max_tokens": settings.GIGACHAT_MAX_TOKENS,
+        "messages": messages,
+    }
+    if functions:
+        payload["functions"] = functions
+        payload["function_call"] = function_call
+    if functions_state_id:
+        payload["functions_state_id"] = functions_state_id
+
+    try:
+        response = client.post(
+            _chat_url(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        logger.exception("GigaChat request failed")
+        raise GeminiError(f"GigaChat request failed: {exc}") from exc
+
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise GeminiError("GigaChat returned an empty response") from exc
+
+    state_id = data.get("functions_state_id") or message.get("functions_state_id")
+    return message, state_id
+
+
+def generate_answer(
+    prompt: str,
+    system_instruction: str | None = None,
+    client=None,
+    history: list[dict[str, str]] | None = None,
+    summary: str | None = None,
+) -> str:
+    """Send a prompt to GigaChat and return the text answer.
+
+    `history` carries the most recent turns as [{"role", "content"}] messages
+    and `summary` is a compact rollup of older turns; together they provide
+    conversational context without sending the full history.
+
+    Raises GeminiError on missing credentials, OAuth failure, or upstream error.
+    """
+    messages = _build_messages(prompt, system_instruction, history, summary)
+    message = chat_completion(messages, client=client)
+    answer = message.get("content")
     if not answer:
         raise GeminiError("GigaChat returned an empty response")
-
     return answer.strip()

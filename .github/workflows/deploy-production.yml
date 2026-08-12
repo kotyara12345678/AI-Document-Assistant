@@ -1,0 +1,198 @@
+﻿# Deploy to production.
+#
+# Manually triggered ONLY (a production deploy must not race or surprise).
+# Optionally proves the release tag exists in GHCR before touching the server.
+#
+# Required environment configuration (`production` environment + repository
+# secrets/vars):
+#   secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+#            JWT_SECRET, GIGACHAT_CLIENT_ID, GIGACHAT_CLIENT_SECRET,
+#            GIGACHAT_SCOPE, GIGACHAT_BASE_URL, GIGACHAT_AUTH_URL, GIGACHAT_MODEL
+#   secrets (optional): DEPLOY_PORT, QDRANT_API_KEY
+#   vars (optional): DEPLOY_APP_DIR, DEPLOY_BACKEND_PORT, DEPLOY_FRONTEND_PORT,
+#                    DEPLOY_PUBLIC_URL, CORS_ORIGINS, ADMIN_EMAILS
+
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "GHCR image tag to deploy (e.g. v1.2.3, main-<sha>, latest)"
+        required: true
+        type: string
+        default: latest
+      run_smoke:
+        description: "Run light smoke checks (/health, /api/ready) after deploy"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+  SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+  DEPLOY_APP_DIR: ${{ vars.DEPLOY_APP_DIR || '/opt/ada-production' }}
+  BACKEND_PORT: ${{ vars.DEPLOY_BACKEND_PORT || '8000' }}
+  FRONTEND_PORT: ${{ vars.DEPLOY_FRONTEND_PORT || '80' }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
+  IMAGE_BACKEND: ghcr.io/kotyara12345678/ai-document-assistant-backend
+  IMAGE_FRONTEND: ghcr.io/kotyara12345678/ai-document-assistant-frontend
+
+jobs:
+  deploy:
+    name: Deploy stack to production server
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify image tags exist in GHCR
+        shell: bash
+        run: |
+          check() {
+            curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer ${{ github.token }}" \
+              "https://ghcr.io/v2/kotyara12345678/ai-document-assistant-$1/manifests/${{ env.IMAGE_TAG }}"
+          }
+          backend_status=$(check backend)
+          frontend_status=$(check frontend)
+          echo "backend:${{ env.IMAGE_TAG }} -> ${backend_status}, frontend -> ${frontend_status}"
+          [[ "$backend_status" == "200" && "$frontend_status" == "200" ]] || { echo "Image tag missing in GHCR"; exit 1; }
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          missing=()
+          [[ -n "${{ env.DEPLOY_HOST }}" ]] || missing+=("DEPLOY_HOST")
+          [[ -n "${{ env.DEPLOY_USER }}" ]] || missing+=("DEPLOY_USER")
+          [[ -n "${{ secrets.DEPLOY_SSH_KEY }}" ]] || missing+=("DEPLOY_SSH_KEY")
+          [[ -n "${{ secrets.JWT_SECRET }}" ]] || missing+=("JWT_SECRET")
+          [[ -n "${{ secrets.GIGACHAT_CLIENT_ID }}" ]] || missing+=("GIGACHAT_CLIENT_ID")
+          [[ -n "${{ secrets.GIGACHAT_CLIENT_SECRET }}" ]] || missing+=("GIGACHAT_CLIENT_SECRET")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "Missing production secrets/vars: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Prepare SSH key
+        shell: bash
+        run: |
+          SSH_KEY_PATH="${RUNNER_TEMP}/deploy_key"
+          KEY="${{ secrets.DEPLOY_SSH_KEY }}"
+          if [[ "${KEY}" != "-----BEGIN"* ]]; then
+            KEY=$(printf '%s' "${KEY}" | sed -e 's/\\n/\n/g')
+          fi
+          install -d -m 700 "$(dirname "${SSH_KEY_PATH}")"
+          printf '%s\n' "${KEY}" > "${SSH_KEY_PATH}"
+          chmod 600 "${SSH_KEY_PATH}"
+          echo "ssh_key_path=${SSH_KEY_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Wait for SSH connectivity
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5)
+          ok=0
+          for i in $(seq 1 24); do
+            if ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" 'echo ok' 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          [[ "$ok" == "1" ]] || { echo "SSH to ${{ env.DEPLOY_HOST }}:${{ env.SSH_PORT }} failed"; exit 1; }
+
+      - name: Generate backend/.env from environment secrets
+        shell: bash
+        run: |
+          mkdir -p backend
+          cat > backend/.env <<'EOF'
+          APP_NAME=AI Document Assistant (production)
+          APP_VERSION=${{ env.IMAGE_TAG }}
+          DEBUG=false
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          GIGACHAT_CLIENT_ID=${{ secrets.GIGACHAT_CLIENT_ID }}
+          GIGACHAT_CLIENT_SECRET=${{ secrets.GIGACHAT_CLIENT_SECRET }}
+          GIGACHAT_SCOPE=${{ secrets.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS' }}
+          GIGACHAT_BASE_URL=${{ secrets.GIGACHAT_BASE_URL || 'https://gigachat.devices.sberbank.ru/api/v1' }}
+          GIGACHAT_AUTH_URL=${{ secrets.GIGACHAT_AUTH_URL || 'https://ngw.devices.sberbank.ru/api/v2/oauth' }}
+          GIGACHAT_MODEL=${{ secrets.GIGACHAT_MODEL || 'GigaChat' }}
+          QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }}
+          CORS_ORIGINS=${{ vars.CORS_ORIGINS || '["http://localhost:80"]' }}
+          ADMIN_EMAILS=${{ vars.ADMIN_EMAILS || '[]' }}
+          RERANKER_ENABLED=false
+          EOF
+
+      - name: Upload deployment files
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          scp_cmd=(scp "${ssh_opts[@]}")
+          ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
+            "mkdir -p '${{ env.DEPLOY_APP_DIR }}/backend' '${{ env.DEPLOY_APP_DIR }}/scripts'"
+          "${scp_cmd[@]}" scripts/deploy/deploy.sh \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/deploy.sh"
+          "${scp_cmd[@]}" deploy/docker-compose.production.yml \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/docker-compose.production.yml"
+          "${scp_cmd[@]}" deploy/scripts/run_backend_migrations.sh \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/scripts/run_backend_migrations.sh"
+          "${scp_cmd[@]}" backend/.env \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/backend/.env"
+
+      - name: Run remote deploy (db up -> migrations -> full stack)
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
+            "chmod +x '${{ env.DEPLOY_APP_DIR }}/deploy.sh' '${{ env.DEPLOY_APP_DIR }}/scripts/run_backend_migrations.sh'
+             cd '${{ env.DEPLOY_APP_DIR }}'
+             APP_DIR='${{ env.DEPLOY_APP_DIR }}' \
+             COMPOSE_PROJECT=ada-production \
+             COMPOSE_FILE=docker-compose.production.yml \
+             IMAGE_BACKEND='${{ env.IMAGE_BACKEND }}:${{ env.IMAGE_TAG }}' \
+             IMAGE_FRONTEND='${{ env.IMAGE_FRONTEND }}:${{ env.IMAGE_TAG }}' \
+             ./deploy.sh"
+
+      - name: Light smoke checks (no data created on production)
+        if: ${{ inputs.run_smoke }}
+        shell: bash
+        run: |
+          public_url="${{ vars.DEPLOY_PUBLIC_URL }}"
+          if [[ -n "${public_url}" ]]; then
+            base_api="${public_url}"
+            base_backend="${public_url}"
+          else
+            base_api="http://${{ env.DEPLOY_HOST }}:${{ env.FRONTEND_PORT }}"
+            base_backend="http://${{ env.DEPLOY_HOST }}:${{ env.BACKEND_PORT }}"
+          fi
+          python3 scripts/ci/e2e_smoke.py --light --base-api "${base_api}" --base-backend "${base_backend}"
+
+      - name: Collect server logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
+            "cd '${{ env.DEPLOY_APP_DIR }}'
+             docker compose -p ada-production -f docker-compose.production.yml logs --no-color \
+             > deploy-logs.txt 2>&1 || true" || true
+          scp "${ssh_opts[@]}" \
+            "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/deploy-logs.txt" \
+            ./deploy-logs.txt || true
+
+      - name: Upload deploy logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-deploy-logs
+          path: deploy-logs.txt

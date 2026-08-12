@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.models.chat import Chat
 from app.models.chat_message import ChatMessage, ChatSummary
 from app.models.document import Document
-from app.schemas.chat import ChatRequest, ChatResponse, SourceRef
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.services import gemini
 from app.services.retrieval import retrieve_context
 

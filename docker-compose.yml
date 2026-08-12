@@ -30,6 +30,7 @@ services:
       - "6334:6334"
 
   backend:
+    image: ghcr.io/kotyara12345678/ai-document-assistant-backend
     build: ./backend
     env_file: ./backend/.env
     environment:
@@ -47,13 +48,14 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=3)\""]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
 
   frontend:
+    image: ghcr.io/kotyara12345678/ai-document-assistant-frontend
     build: ./frontend
     depends_on:
       backend:

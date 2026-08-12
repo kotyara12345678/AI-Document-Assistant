@@ -101,27 +101,50 @@ def _keyword_search(
     (plain/websearch_to_tsquery AND every token together). ts_rank then orders
     chunks by how many terms they cover.
 
+    Two relevance refinements keep partial matches from polluting the top of
+    the list:
+
+    * the file name is searched as well (normalized to words), so a document
+      whose name carries the query words is found even when its content does
+      not (e.g. ``Данные_для_договора_Сергей.pdf`` for "данные договора");
+    * every hit reports how many of the query's lexemes it actually covers
+      (``matched_lexemes`` / ``total_lexemes``), and the merge step weights
+      the normalized rank by that coverage. A document matching only a few
+      words of a multi-word query no longer outranks a precise semantic hit.
+
     ``document_ids`` restricts matches to those documents; None searches the
     user's whole library.
 
-    Returns raw rows {document_id, chunk_index, text, filename, rank}.
+    Returns raw rows {document_id, chunk_index, text, filename, rank,
+    total_lexemes, matched_lexemes}.
     """
     try:
         db = SessionLocal()
         try:
+            # The file name participates in ranking, coverage and matching:
+            # normalize it to space-separated words (so underscores, dots and
+            # dashes do not fuse lexemes) and combine it with the chunk text.
+            tsv = (
+                f"to_tsvector('{FTS_CONFIG}', "
+                "regexp_replace(d.original_filename, "
+                "'[^a-zA-Z0-9а-яА-ЯёЁ]', ' ', 'g') || ' ' || dc.text)"
+            )
             sql = (
                 "SELECT dc.document_id AS document_id, dc.chunk_index AS chunk_index, "
                 "dc.text AS text, d.original_filename AS filename, "
-                f"ts_rank(to_tsvector('{FTS_CONFIG}', dc.text), q.query) AS rank "
+                f"ts_rank({tsv}, q.query) AS rank, "
+                "q.total_lexemes AS total_lexemes, "
+                f"(SELECT count(*) FROM unnest({tsv}) AS chunk_lex "
+                "WHERE chunk_lex.lexeme = ANY(q.lexemes)) AS matched_lexemes "
                 "FROM document_chunks dc "
                 "JOIN documents d ON d.id = dc.document_id "
                 "CROSS JOIN ("
                 "  SELECT to_tsquery('" + FTS_CONFIG + "', "
-                "    string_agg(lexeme, ' | ')) AS query "
+                "    string_agg(lexeme, ' | ')) AS query, "
+                "    array_agg(lexeme) AS lexemes, count(*) AS total_lexemes "
                 "  FROM unnest(to_tsvector('" + FTS_CONFIG + "', :question))"
                 ") q "
-                f"WHERE d.user_id = :user_id "
-                f"AND to_tsvector('{FTS_CONFIG}', dc.text) @@ q.query"
+                f"WHERE d.user_id = :user_id AND {tsv} @@ q.query"
             )
             params: dict = {"question": question, "user_id": user_id}
             if document_ids:
@@ -155,12 +178,18 @@ def _merge_results(
     for row in keyword_rows:
         kw_rows[(row["document_id"], row["chunk_index"])] = row
 
-    # Max-normalize keyword ranks to [0, 1] so both retrievers share a scale.
+    # Max-normalize keyword ranks to [0, 1] and weight each by the fraction of
+    # the query's lexemes the chunk actually covers, so a document matching
+    # only a few words of a multi-word query does not dominate a precise
+    # semantic hit. A full-coverage top match still scores 1.0.
     kw_scores: dict[tuple[int, int], float] = {}
     max_rank = max((row["rank"] for row in keyword_rows), default=0.0)
     if max_rank > 0:
         for key, row in kw_rows.items():
-            kw_scores[key] = row["rank"] / max_rank
+            total = row.get("total_lexemes") or 0
+            matched = row.get("matched_lexemes") or 0
+            coverage = (matched / total) if total else 0.0
+            kw_scores[key] = (row["rank"] / max_rank) * coverage
 
     merged: dict[tuple[int, int], RetrievedChunk] = {}
     for chunk in semantic_chunks:

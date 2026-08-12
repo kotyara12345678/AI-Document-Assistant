@@ -1,0 +1,4 @@
+# Minimal, safe lint rules for CI: syntax errors, undefined names, unused
+# imports/variables and similar high-signal issues. Deliberately no style
+# rules, so existing code style is never forced to change.
+select = ["E4", "E7", "E9", "F"]

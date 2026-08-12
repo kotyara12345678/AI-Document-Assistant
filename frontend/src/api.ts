@@ -104,12 +104,28 @@ export async function deleteAllDocuments(): Promise<void> {
 }
 
 export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
-  const res = await fetch(`${BASE}/chat`, {
+  const res = await fetch(`${BASE}/agent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(req),
   });
   return handle<ChatResponse>(res);
+}
+
+export async function downloadDocument(id: number, filename: string): Promise<void> {
+  const res = await fetch(`${BASE}/documents/${id}/file`, { headers: authHeaders() });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || `document-${id}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export async function fetchChats(): Promise<ChatOut[]> {

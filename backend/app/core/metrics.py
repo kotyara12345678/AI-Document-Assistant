@@ -8,7 +8,6 @@ restart, which is fine for an at-a-glance admin panel.
 """
 
 import threading
-import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Deque

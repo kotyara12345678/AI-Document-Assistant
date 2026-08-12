@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from app.services.gemini import GeminiError, generate_answer
+from app.services.gemini import GeminiError, chat_with_functions, generate_answer
 
 KEY = "test-key"
 
@@ -149,3 +149,57 @@ def test_passes_history_and_summary(monkeypatch):
         {"role": "assistant", "content": "earlier a"},
         {"role": "user", "content": "hello"},
     ]
+
+
+def test_chat_with_functions_returns_message_and_state(monkeypatch):
+    _patch_settings(monkeypatch)
+    message = {
+        "role": "assistant",
+        "content": None,
+        "function_call": {"name": "search_documents", "arguments": {"query": "q"}},
+        "functions_state_id": "state-1",
+    }
+    fake = _FakeClient(data={"choices": [{"message": message}], "functions_state_id": "state-1"})
+    result, state_id = chat_with_functions([{"role": "user", "content": "hi"}], client=fake)
+    assert result == message
+    assert state_id == "state-1"
+
+
+def test_chat_with_functions_state_from_message_level(monkeypatch):
+    _patch_settings(monkeypatch)
+    message = {
+        "role": "assistant",
+        "content": None,
+        "function_call": {"name": "search_documents", "arguments": {"query": "q"}},
+    }
+    fake = _FakeClient(data={"choices": [{"message": message}]})
+    result, state_id = chat_with_functions(
+        [{"role": "user", "content": "hi"}],
+        functions=[{"name": "search_documents"}],
+        functions_state_id="prev-state",
+        client=fake,
+    )
+    assert result == message
+    assert state_id is None
+    payload = fake.last_kwargs["json"]
+    assert payload["functions"] == [{"name": "search_documents"}]
+    assert payload["function_call"] == "auto"
+    assert payload["functions_state_id"] == "prev-state"
+
+
+def test_chat_with_functions_plain_without_functions(monkeypatch):
+    _patch_settings(monkeypatch)
+    fake = _FakeClient(data={"choices": [{"message": {"content": "ok"}}]})
+    result, state_id = chat_with_functions([{"role": "user", "content": "hi"}], client=fake)
+    assert result["content"] == "ok"
+    assert state_id is None
+    payload = fake.last_kwargs["json"]
+    assert "functions" not in payload
+    assert "functions_state_id" not in payload
+
+
+def test_chat_with_functions_wraps_errors(monkeypatch):
+    _patch_settings(monkeypatch)
+    fake = _FakeClient(error=RuntimeError("boom"))
+    with pytest.raises(GeminiError, match="boom"):
+        chat_with_functions([{"role": "user", "content": "hi"}], client=fake)

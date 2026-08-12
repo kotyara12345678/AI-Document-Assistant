@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     GIGACHAT_CLIENT_SECRET: str | None = None
     GIGACHAT_SCOPE: str = "GIGACHAT_API_PERS"
     GIGACHAT_BASE_URL: str = "https://gigachat.devices.sberbank.ru/api/v1"
+    # OAuth token endpoint. Kept configurable so CI/E2E can point the client at
+    # a local mock LLM instead of the real GigaChat API.
+    GIGACHAT_AUTH_URL: str = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
     # Supported: GigaChat-Lite, GigaChat-Pro, GigaChat-Max, GigaChat-Ultra, GigaChat
     GIGACHAT_MODEL: str = "GigaChat-Max"
     GIGACHAT_TEMPERATURE: float = 0.2
@@ -72,6 +75,29 @@ class Settings(BaseSettings):
     # OAuth access token TTL: refresh every 30 minutes.
     GIGACHAT_TOKEN_TTL_SECONDS: int = 1800
     CHAT_TOP_K: int = 5
+
+    # --- Agent layer (function calling over the existing retrieval pipeline) ---
+    # How many ranked chunks a search_documents tool call returns to the model.
+    AGENT_TOP_K: int = 3
+    # Maximum number of tool-call rounds in one agent turn (bounds LLM cost).
+    # High enough for the search -> read -> create chain plus a retry after a
+    # hallucinated document id.
+    AGENT_MAX_TOOL_ROUNDS: int = 5
+    # Max characters of document text a read_document tool call returns per
+    # call. Longer documents are read in windows via the tool's `offset` arg
+    # instead of flooding the LLM context.
+    AGENT_READ_MAX_CHARS: int = 8000
+    # Bounds for documents the agent may create. The LLM only produces a
+    # structured DocumentSpec; these caps are enforced by Pydantic validation
+    # before any file is rendered, so an oversized spec can never blow up the
+    # generator or the user's storage.
+    AGENT_DOCUMENT_MAX_CHARS: int = 60_000
+    AGENT_DOCUMENT_MAX_SECTIONS: int = 50
+    AGENT_DOCUMENT_MAX_PARAGRAPHS: int = 200
+    AGENT_DOCUMENT_MAX_LINE_CHARS: int = 2_000
+    AGENT_DOCUMENT_MAX_LIST_ITEMS: int = 200
+    AGENT_DOCUMENT_MAX_TABLE_ROWS: int = 100
+    AGENT_DOCUMENT_DEFAULT_TITLE: str = "document"
 
     # --- Reranker (cross-encoder re-ranking of hybrid candidates) ---
     # When enabled, hybrid retrieval first fetches RERANKER_CANDIDATES chunks

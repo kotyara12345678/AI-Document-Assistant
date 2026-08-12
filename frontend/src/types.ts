@@ -43,10 +43,23 @@ export interface ChatRequest {
   document_id?: number | null;
 }
 
+export interface AgentToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface CreatedDocument {
+  document_id: number;
+  filename: string;
+  file_type: string;
+}
+
 export interface ChatResponse {
   chat_id: number;
   answer: string;
   sources: SourceRef[];
+  tool_calls?: AgentToolCall[];
+  created_documents?: CreatedDocument[];
 }
 
 export interface ChatOut {
