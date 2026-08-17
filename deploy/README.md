@@ -17,7 +17,7 @@ its own **single instance** of the full application stack behind nginx.
 | `.github/workflows/ci.yml` | PR + push to `main` | CI stack | n/a |
 | `.github/workflows/docker-publish.yml` | push to `main` / `v*` tags | n/a | GHCR |
 | `.github/workflows/deploy-staging.yml` | push to `main` / manual | `ada-staging` | `:5173` |
-| `.github/workflows/deploy-production.yml` | manual only | `ada-production` | `:80` |
+| `.github/workflows/deploy-production.yml` | auto after Docker publish (push to `main`) / manual | `ada-production` | `:80` |
 
 ## Pipeline flow (what happens on a push to `main`)
 
@@ -25,10 +25,12 @@ its own **single instance** of the full application stack behind nginx.
 2. `deploy-staging` — builds fresh `staging-<sha>` images, then on the staging
    server: db up → **alembic migrations** → full stack → **full HTTP E2E smoke**
    (register → upload → search → chat → agent → download a real `.docx`).
-3. Production is never automatic. Run `deploy-production` from the Actions tab,
-   pick an existing GHCR tag, and it runs db up → migrations → full stack →
-   light smoke (`/health`, `/api/ready`). Light only, so no test data touches
-   production.
+3. `deploy-production` — runs **automatically** once `docker-publish` has
+   finished, deploying the same `main-<sha>` images to the production VPS:
+   db up → migrations → full stack → light smoke (`/health`, `/api/ready`).
+   Light only, so no test data ever touches production.
+4. Manual deploys are still possible from the Actions tab: run
+   `deploy-production` with any existing GHCR tag (rollback, hotfix).
 
 If any critical step fails (migration, backend health, smoke), the workflow
 fails and server logs are attached as an artifact (`*-deploy-logs`).

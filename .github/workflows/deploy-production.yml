@@ -1,7 +1,12 @@
 ﻿# Deploy to production.
 #
-# Manually triggered ONLY (a production deploy must not race or surprise).
-# Optionally proves the release tag exists in GHCR before touching the server.
+# Two entry points:
+#   * push to main -> AUTOMATIC. Runs after "Docker publish" finishes
+#     successfully and deploys the exact main-<sha> images that workflow just
+#     built and pushed to GHCR. So: commit on main == new version live on the
+#     production VPS.
+#   * workflow_dispatch -> MANUAL. Deploys any existing GHCR tag (rollback,
+#     hotfix, arbitrary version).
 #
 # Required environment configuration (`production` environment + repository
 # secrets/vars):
@@ -15,6 +20,10 @@
 name: Deploy production
 
 on:
+  workflow_run:
+    workflows: ["Docker publish"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       image_tag:
@@ -42,7 +51,6 @@ env:
   DEPLOY_APP_DIR: ${{ vars.DEPLOY_APP_DIR || '/opt/ada-production' }}
   BACKEND_PORT: ${{ vars.DEPLOY_BACKEND_PORT || '8000' }}
   FRONTEND_PORT: ${{ vars.DEPLOY_FRONTEND_PORT || '80' }}
-  IMAGE_TAG: ${{ inputs.image_tag }}
   IMAGE_BACKEND: ghcr.io/kotyara12345678/ai-document-assistant-backend
   IMAGE_FRONTEND: ghcr.io/kotyara12345678/ai-document-assistant-frontend
 
@@ -51,19 +59,35 @@ jobs:
     name: Deploy stack to production server
     runs-on: ubuntu-latest
     environment: production
+    # Auto path fires only when "Docker publish" finished successfully.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Check out the exact commit that was pushed so deploy.sh, the compose
+          # files and the migrations script match the images being deployed.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Determine image tag to deploy
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "image_tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=main-${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Verify image tags exist in GHCR
         shell: bash
         run: |
           check() {
             curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer ${{ github.token }}" \
-              "https://ghcr.io/v2/kotyara12345678/ai-document-assistant-$1/manifests/${{ env.IMAGE_TAG }}"
+              "https://ghcr.io/v2/kotyara12345678/ai-document-assistant-$1/manifests/${{ steps.tag.outputs.image_tag }}"
           }
           backend_status=$(check backend)
           frontend_status=$(check frontend)
-          echo "backend:${{ env.IMAGE_TAG }} -> ${backend_status}, frontend -> ${frontend_status}"
+          echo "backend:${{ steps.tag.outputs.image_tag }} -> ${backend_status}, frontend -> ${frontend_status}"
           [[ "$backend_status" == "200" && "$frontend_status" == "200" ]] || { echo "Image tag missing in GHCR"; exit 1; }
 
       - name: Validate deployment configuration
@@ -115,7 +139,7 @@ jobs:
           mkdir -p backend
           cat > backend/.env <<'EOF'
           APP_NAME=AI Document Assistant (production)
-          APP_VERSION=${{ env.IMAGE_TAG }}
+          APP_VERSION=${{ steps.tag.outputs.image_tag }}
           DEBUG=false
           JWT_SECRET=${{ secrets.JWT_SECRET }}
           GIGACHAT_CLIENT_ID=${{ secrets.GIGACHAT_CLIENT_ID }}
@@ -158,12 +182,12 @@ jobs:
              APP_DIR='${{ env.DEPLOY_APP_DIR }}' \
              COMPOSE_PROJECT=ada-production \
              COMPOSE_FILE=docker-compose.production.yml \
-             IMAGE_BACKEND='${{ env.IMAGE_BACKEND }}:${{ env.IMAGE_TAG }}' \
-             IMAGE_FRONTEND='${{ env.IMAGE_FRONTEND }}:${{ env.IMAGE_TAG }}' \
+             IMAGE_BACKEND='${{ env.IMAGE_BACKEND }}:${{ steps.tag.outputs.image_tag }}' \
+             IMAGE_FRONTEND='${{ env.IMAGE_FRONTEND }}:${{ steps.tag.outputs.image_tag }}' \
              ./deploy.sh"
 
       - name: Light smoke checks (no data created on production)
-        if: ${{ inputs.run_smoke }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke }}
         shell: bash
         run: |
           public_url="${{ vars.DEPLOY_PUBLIC_URL }}"
