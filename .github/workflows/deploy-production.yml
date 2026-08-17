@@ -39,6 +39,9 @@ on:
 
 permissions:
   contents: read
+  # Required to verify the just-pushed main-<sha> images exist in GHCR
+  # (private packages) before SSHing to the server.
+  packages: read
 
 concurrency:
   group: deploy-production
