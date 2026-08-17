@@ -1,0 +1,22 @@
+# ---- Production image: Vite-built SPA served by nginx on port 80 ----
+# nginx also proxies /api, /api2 and /health to the backend service
+# (see nginx.conf; the compose service is named "backend").
+#
+# Used by CI/CD only: docker-publish.yml and the deploy-staging build job
+# (deploy/docker-compose.staging.yml maps host 5173 -> container 80, and
+# deploy/docker-compose.production.yml maps host 80 -> container 80).
+#
+# For LOCAL development keep using frontend/Dockerfile via the root
+# docker-compose.yml (vite dev server, hot reload, bind-mounted source).
+
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:1.27-alpine AS runtime
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80

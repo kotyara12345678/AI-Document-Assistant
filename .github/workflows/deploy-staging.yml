@@ -63,7 +63,7 @@ jobs:
         with:
           image: ${{ env.IMAGE_FRONTEND }}
           context: frontend
-          file: frontend/Dockerfile
+          file: frontend/Dockerfile.prod
           tags: ${{ env.IMAGE_FRONTEND }}:${{ env.IMAGE_TAG }}
           push: "true"
           token: ${{ github.token }}
@@ -183,7 +183,9 @@ jobs:
             base_backend="${public_url}"
           else
             base_api="http://${{ env.DEPLOY_HOST }}:${{ env.FRONTEND_PORT }}"
-            base_backend="http://${{ env.DEPLOY_HOST }}:${{ env.BACKEND_PORT }}"
+            # nginx (frontend container) proxies /api and /health to the
+            # backend, so the smoke goes through the same path as a real user.
+            base_backend="http://${{ env.DEPLOY_HOST }}:${{ env.FRONTEND_PORT }}"
           fi
           python3 scripts/ci/e2e_smoke.py --base-api "${base_api}" --base-backend "${base_backend}"
 

@@ -186,7 +186,9 @@ jobs:
             base_backend="${public_url}"
           else
             base_api="http://${{ env.DEPLOY_HOST }}:${{ env.FRONTEND_PORT }}"
-            base_backend="http://${{ env.DEPLOY_HOST }}:${{ env.BACKEND_PORT }}"
+            # Backend binds 127.0.0.1:8000 and is only reachable through the
+            # nginx frontend (nginx proxies /api and /health to it).
+            base_backend="http://${{ env.DEPLOY_HOST }}:${{ env.FRONTEND_PORT }}"
           fi
           python3 scripts/ci/e2e_smoke.py --light --base-api "${base_api}" --base-backend "${base_backend}"
 
