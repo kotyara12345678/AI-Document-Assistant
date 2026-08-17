@@ -4,6 +4,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 PASSWORD_MIN_LEN = 6
 PASSWORD_MAX_LEN = 128
+# bcrypt only uses the first 72 bytes of the password; anything longer would be
+# silently truncated and produce a hash that matches the wrong prefix.
+BCRYPT_MAX_BYTES = 72
 
 
 class RegisterRequest(BaseModel):
@@ -15,6 +18,10 @@ class RegisterRequest(BaseModel):
     def passwords_must_match(self) -> "RegisterRequest":
         if self.password != self.password_confirm:
             raise ValueError("Passwords do not match")
+        if len(self.password.encode("utf-8")) > BCRYPT_MAX_BYTES:
+            raise ValueError(
+                f"Password must not exceed {BCRYPT_MAX_BYTES} bytes in UTF-8 encoding"
+            )
         return self
 
 

@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { fetchAdminStats } from "../api";
 import type { AdminStats } from "../types";
+import UsersAdmin from "./UsersAdmin";
 
 interface Props {
   onBack: () => void;
+  currentUserId: number;
 }
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
@@ -24,9 +26,10 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-export default function AdminPanel({ onBack }: Props) {
+export default function AdminPanel({ onBack, currentUserId }: Props) {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<"stats" | "users">("stats");
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +60,25 @@ export default function AdminPanel({ onBack }: Props) {
           </div>
         </div>
 
+        <div className="admin__tabs">
+          <button
+            className={`admin__tab ${view === "stats" ? "admin__tab--active" : ""}`}
+            onClick={() => setView("stats")}
+          >
+            Статистика
+          </button>
+          <button
+            className={`admin__tab ${view === "users" ? "admin__tab--active" : ""}`}
+            onClick={() => setView("users")}
+          >
+            Пользователи
+          </button>
+        </div>
+
+        {view === "users" ? (
+          <UsersAdmin currentUserId={currentUserId} />
+        ) : (
+          <>
         {error && (
           <div className="admin__error">
             {error} — бэкенд отклонил доступ администратора (HTTP 401/403).
@@ -153,6 +175,8 @@ export default function AdminPanel({ onBack }: Props) {
               </section>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </main>

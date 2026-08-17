@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from app.models.document import Document
 from app.services.chunking import Chunk, chunk_text
+from app.services.entity_locks import lock_for
 from app.vector import client as vector_client
 from app.vector.embeddings import embed_texts
 
@@ -43,11 +44,35 @@ def _persist_chunks(document_id: int, chunks: list[Chunk]) -> None:
         db.close()
 
 
+def _document_exists(document_id: int) -> bool:
+    """Whether the document row still exists (fresh connection)."""
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return (
+            db.query(Document.id).filter(Document.id == document_id).first() is not None
+        )
+    finally:
+        db.close()
+
+
 def index_document(document: Document) -> IndexResult:
     """Chunk, embed and store a document's vectors in Qdrant.
 
     The same chunks are also persisted to PostgreSQL so keyword (FTS) search
     can run alongside the semantic one.
+
+    Re-indexing is idempotent: existing vectors for the document are deleted
+    first and deterministic point ids replace old points, so repeated uploads
+    or explicit re-index calls never append duplicate chunks.
+
+    Concurrency: the whole replace (delete → persist → embed → upsert) runs
+    under a per-document lock shared with ``documents.delete_document`` /
+    ``delete_all_documents``. Two concurrent index calls (or an index racing
+    with a delete of the same document) therefore serialize, and a stale
+    re-index of an already-deleted document is skipped instead of resurrecting
+    ghost vectors.
     """
     chunks = chunk_text(document.content)
 
@@ -55,27 +80,44 @@ def index_document(document: Document) -> IndexResult:
         logger.warning("Document %s has no chunks to index", document.id)
         return IndexResult(document_id=document.id, chunks_indexed=0)
 
-    try:
-        _persist_chunks(document.id, chunks)
-    except Exception:
-        logger.exception("Failed to persist chunks for document %s", document.id)
+    with lock_for(document.id):
+        if not _document_exists(document.id):
+            # Deleted while we were waiting / racing: never write vectors or FTS
+            # rows for a document that no longer exists.
+            logger.info(
+                "Document %s no longer exists; skipping index", document.id
+            )
+            return IndexResult(document_id=document.id, chunks_indexed=0)
 
-    vectors = embed_texts([c.text for c in chunks])
+        try:
+            vector_client.delete_document_vectors(document.id)
+        except Exception:
+            logger.warning(
+                "Could not clear stale vectors for document %s before re-index",
+                document.id,
+            )
 
-    payloads = [
-        {
-            "document_id": document.id,
-            "user_id": document.user_id,
-            "chunk_index": chunk.index,
-            "text": chunk.text,
-            "original_filename": document.original_filename,
-        }
-        for chunk in chunks
-    ]
+        try:
+            _persist_chunks(document.id, chunks)
+        except Exception:
+            logger.exception("Failed to persist chunks for document %s", document.id)
 
-    count = vector_client.upsert_chunks(vectors, payloads)
-    logger.info("Indexed %s chunks for document %s", count, document.id)
-    return IndexResult(document_id=document.id, chunks_indexed=count)
+        vectors = embed_texts([c.text for c in chunks])
+
+        payloads = [
+            {
+                "document_id": document.id,
+                "user_id": document.user_id,
+                "chunk_index": chunk.index,
+                "text": chunk.text,
+                "original_filename": document.original_filename,
+            }
+            for chunk in chunks
+        ]
+
+        count = vector_client.upsert_chunks(vectors, payloads)
+        logger.info("Indexed %s chunks for document %s", count, document.id)
+        return IndexResult(document_id=document.id, chunks_indexed=count)
 
 
 def delete_document_index(document_id: int) -> int:

@@ -7,13 +7,18 @@ type Mode = "login" | "register";
 
 interface Props {
   onAuthed: (user: UserOut) => void;
+  initialMode?: Mode;
+  onBack?: () => void;
+  onOpenPrivacy?: () => void;
+  onOpenCookies?: () => void;
 }
 
-export default function AuthScreen({ onAuthed }: Props) {
-  const [mode, setMode] = useState<Mode>("login");
+export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivacy, onOpenCookies }: Props) {
+  const [mode, setMode] = useState<Mode>(initialMode ?? "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [consent, setConsent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +41,11 @@ export default function AuthScreen({ onAuthed }: Props) {
       return;
     }
 
+    if (mode === "register" && !consent) {
+      setError("Необходимо согласие на обработку персональных данных");
+      return;
+    }
+
     setBusy(true);
     try {
       const data = mode === "register" ? await register(email, password, passwordConfirm) : await login(email, password);
@@ -53,6 +63,11 @@ export default function AuthScreen({ onAuthed }: Props) {
   return (
     <div className="auth">
       <form className="auth__card" onSubmit={submit}>
+        {onBack && (
+          <button type="button" className="auth__back" onClick={onBack}>
+            ← На сайт
+          </button>
+        )}
         <div className="auth__brand">ADA</div>
         <p className="auth__subtitle">
           {isRegister
@@ -132,6 +147,31 @@ export default function AuthScreen({ onAuthed }: Props) {
             </label>
           )}
 
+          {isRegister && (
+            <label className="auth__consent">
+              <input
+                className="auth__consent-box"
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+              />
+              <span className="auth__consent-text">
+                Я согласен(на) на обработку моих персональных данных в соответствии с{" "}
+                <button
+                  type="button"
+                  className="auth__link"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onOpenPrivacy?.();
+                  }}
+                >
+                  Политикой обработки персональных данных
+                </button>
+                .
+              </span>
+            </label>
+          )}
+
           {error && <div className="auth__error">{error}</div>}
 
           <button className="auth__submit" type="submit" disabled={busy}>
@@ -152,6 +192,13 @@ export default function AuthScreen({ onAuthed }: Props) {
               onClick={() => switchMode(isRegister ? "login" : "register")}
             >
               {isRegister ? "Войти" : "Зарегистрироваться"}
+            </button>
+          </p>
+
+          <p className="auth__cookie-note">
+            Мы используем файлы cookie для работы и улучшения сервиса.{" "}
+            <button type="button" className="auth__link" onClick={() => onOpenCookies?.()}>
+              Cookie Policy
             </button>
           </p>
         </div>

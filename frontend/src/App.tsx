@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentToolCall, ChatOut, ChatResponse, CreatedDocument, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
+import type { AgentStep, ChatOut, CreatedDocument, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
 import {
   createChat,
   deleteAllDocuments,
@@ -12,14 +12,16 @@ import {
   fetchDocuments,
   fetchMe,
   getToken,
-  sendChat,
   setToken,
+  streamAgent,
   uploadDocuments,
 } from "./api";
 import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
-import AuthScreen from "./components/AuthScreen";
 import AdminPanel from "./components/AdminPanel";
+import LandingFlow from "./components/LandingFlow";
+import UploadWarning from "./components/UploadWarning";
+import { hasSeenUploadWarning, markUploadWarningSeen } from "./consent";
 import CopyableBlock, { extractCodeBlock } from "./codeBlock";
 
 interface Message {
@@ -27,24 +29,11 @@ interface Message {
   role: "user" | "assistant";
   text: string;
   sources?: SourceRef[];
-  steps?: AgentToolCall[];
+  agentSteps?: AgentStep[];
   createdDocuments?: CreatedDocument[];
+  documentId?: number;
+  contextDocumentIds?: number[] | null;
   error?: boolean;
-}
-
-function describeToolCall(tc: AgentToolCall): string {
-  const a = tc.arguments || {};
-  switch (tc.name) {
-    case "search_documents":
-      return `Поиск по документам: «${String(a.query ?? "")}»`;
-    case "read_document":
-      return `Чтение документа #${a.document_id ?? "?"}` +
-        (a.offset ? ` (с ${a.offset} символа)` : "");
-    case "create_document":
-      return `Создание документа${a.output_format ? ` (${a.output_format})` : ""}`;
-    default:
-      return `Действие: ${tc.name}`;
-  }
 }
 
 const THEME_KEY = "docsearch-theme";
@@ -102,14 +91,31 @@ export default function App() {
   const [viewerHighlights, setViewerHighlights] = useState<string[]>([]);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  // Documents the user has pinned as context for the next message (UI chips).
+  const [contextDocs, setContextDocs] = useState<number[]>([]);
+  // Files awaiting confirmation of the first-upload warning.
+  const [warningPending, setWarningPending] = useState<File[] | null>(null);
 
   const noticeTimer = useRef<number | null>(null);
   const composerFileRef = useRef<HTMLInputElement | null>(null);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
 
   const flashNotice = useCallback((msg: string) => {
     setNotice(msg);
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
+  }, []);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    setShowScrollBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 150);
+  }, []);
+
+  const scrollMessagesToBottom = useCallback(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
   const logout = useCallback(() => {
@@ -180,19 +186,21 @@ export default function App() {
       setMessagesLoading(true);
       try {
         const rows = await fetchChatMessages(chatId);
-        setMessages(
-          rows.map((m: MessageOut) => ({
-            id: m.id,
-            role: m.role as Message["role"],
-            text: m.content,
-          }))
-        );
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось загрузить сообщения");
-      } finally {
-        setMessagesLoading(false);
-      }
-    },
+          setMessages(
+            rows.map((m: MessageOut) => ({
+              id: m.id,
+              role: m.role as Message["role"],
+              text: m.content,
+              documentId: m.document_id ?? undefined,
+              contextDocumentIds: m.context_document_ids ?? undefined,
+            }))
+          );
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Не удалось загрузить сообщения");
+        } finally {
+          setMessagesLoading(false);
+        }
+      },
     []
   );
 
@@ -218,6 +226,8 @@ export default function App() {
               id: m.id,
               role: m.role as Message["role"],
               text: m.content,
+              documentId: m.document_id ?? undefined,
+              contextDocumentIds: m.context_document_ids ?? undefined,
             }))
           );
         } else {
@@ -292,6 +302,16 @@ export default function App() {
     setViewerHighlights([]);
   }, []);
 
+  const toggleContextDoc = useCallback((id: number) => {
+    setContextDocs((prev) =>
+      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
+    );
+  }, []);
+
+  const removeContextDoc = useCallback((id: number) => {
+    setContextDocs((prev) => prev.filter((d) => d !== id));
+  }, []);
+
   const onUploaded = useCallback(
     (doc: DocumentOut) => {
       setDocuments((prev) => [doc, ...prev]);
@@ -302,11 +322,10 @@ export default function App() {
     [openDocument, flashNotice]
   );
 
-  const uploadFiles = useCallback(
-    async (files: FileList | null) => {
-      if (!files || files.length === 0) return;
+  const runUpload = useCallback(
+    async (files: File[]) => {
       try {
-        const docs = await uploadDocuments(Array.from(files));
+        const docs = await uploadDocuments(files);
         docs.forEach((doc) => onUploaded(doc));
       } catch (err) {
         setError(err instanceof Error ? err.message : "Не удалось загрузить документы");
@@ -314,6 +333,26 @@ export default function App() {
     },
     [onUploaded]
   );
+
+  const requestUpload = useCallback(
+    (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      const selected = Array.from(files);
+      if (hasSeenUploadWarning()) {
+        void runUpload(selected);
+      } else {
+        setWarningPending(selected);
+      }
+    },
+    [runUpload]
+  );
+
+  const confirmUploadWarning = useCallback(() => {
+    markUploadWarningSeen();
+    const pending = warningPending;
+    setWarningPending(null);
+    if (pending) void runUpload(pending);
+  }, [warningPending, runUpload]);
 
   const removeDocument = useCallback(
     async (doc: DocumentOut) => {
@@ -354,40 +393,83 @@ export default function App() {
 
       const chatId = activeChatId;
       const userMsg: Message = { id: nextLocalId(), role: "user", text: trimmed };
-      setMessages((prev) => [...prev, userMsg]);
+      const assistantId = nextLocalId();
+      const assistantMsg: Message = { id: assistantId, role: "assistant", text: "", agentSteps: [] };
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInput("");
       setLoading(true);
 
       try {
-        const data: ChatResponse = await sendChat({ chat_id: chatId, question: trimmed });
-        setMessages((prev) => [
-          ...prev,
+        await streamAgent(
           {
-            id: nextLocalId(),
-            role: "assistant",
-            text: data.answer,
-            sources: data.sources,
-            steps: data.tool_calls,
-            createdDocuments: data.created_documents,
+            chat_id: chatId,
+            question: trimmed,
+            context_document_ids: contextDocs.length ? [...contextDocs] : null,
           },
-        ]);
+          {
+            onStep: (step) => {
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== assistantId) return m;
+                  const steps = m.agentSteps ? [...m.agentSteps] : [];
+                  const idx = steps.findIndex((s) => s.step_id === step.step_id);
+                  if (idx >= 0) steps[idx] = step;
+                  else steps.push(step);
+                  return { ...m, agentSteps: steps };
+                })
+              );
+            },
+            onDocumentCreated: (doc) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        createdDocuments: [
+                          ...(m.createdDocuments || []),
+                          {
+                            document_id: doc.document_id,
+                            filename: doc.filename,
+                            file_type: doc.file_type,
+                          },
+                        ],
+                      }
+                    : m
+                )
+              );
+            },
+            onFinal: (content, sources) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, text: content, sources: sources || m.sources } : m
+                )
+              );
+            },
+            onError: (msg) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, text: msg, error: true } : m
+                )
+              );
+            },
+          }
+        );
         // The backend may have titled this chat after its first question.
+        setContextDocs([]);
         void refreshChats();
       } catch (err) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: nextLocalId(),
-            role: "assistant",
-            text: err instanceof Error ? err.message : "Что-то пошло не так",
-            error: true,
-          },
-        ]);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, text: err instanceof Error ? err.message : "Что-то пошло не так", error: true }
+              : m
+          )
+        );
       } finally {
         setLoading(false);
       }
     },
-    [loading, activeChatId, refreshChats]
+    [loading, activeChatId, refreshChats, contextDocs]
   );
 
   const openSource = useCallback(
@@ -409,7 +491,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthScreen onAuthed={setUser} />;
+    return <LandingFlow onAuthed={setUser} />;
   }
 
   return (
@@ -503,8 +585,12 @@ export default function App() {
             documents.map((doc) => (
               <div
                 key={doc.id}
-                className={`doc-item ${viewer?.id === doc.id ? "doc-item--active" : ""}`}
+                className={`doc-item ${viewer?.id === doc.id ? "doc-item--active" : ""} ${
+                  contextDocs.includes(doc.id) ? "doc-item--context" : ""
+                }`}
                 onClick={() => void openDocument(doc.id)}
+                onDoubleClick={() => toggleContextDoc(doc.id)}
+                title="Открыть (один клик) · закрепить как контекст (двойной клик)"
               >
                 <div className="doc-item__icon">{fileIcon(doc.file_type)}</div>
                 <div className="doc-item__body">
@@ -530,7 +616,7 @@ export default function App() {
       </aside>
 
       {showAdmin ? (
-        <AdminPanel onBack={() => setShowAdmin(false)} />
+        <AdminPanel onBack={() => setShowAdmin(false)} currentUserId={user.id} />
       ) : (
         <main className="chat">
           <div className="chat__header">
@@ -542,7 +628,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="chat__messages">
+          <div className="chat__scroll">
+            <div className="chat__messages" ref={messagesRef} onScroll={handleMessagesScroll}>
             {messagesLoading ? (
               <div className="chat__empty">
                 <div className="chat__empty-icon">💬</div>
@@ -562,37 +649,69 @@ export default function App() {
                   <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>
                     {extractCodeBlock(m.text) ? <CopyableBlock result={extractCodeBlock(m.text)!} /> : m.text}
                   </div>
-                  {m.role === "assistant" && m.steps && m.steps.length > 0 && (
+                  {m.role === "user" && m.contextDocumentIds && m.contextDocumentIds.length > 0 && (
+                    <div className="msg__context-chips">
+                      {m.contextDocumentIds.map((id) => (
+                        <span className="context-chip context-chip--readonly" key={id}>
+                          {documents.find((d) => d.id === id)?.original_filename ?? `Документ ${id}`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {m.role === "assistant" && m.agentSteps && m.agentSteps.length > 0 && (
                     <div className="agent-steps">
                       <div className="agent-steps__title">Шаги нейросети</div>
-                      {m.steps.map((s, i) => (
-                        <div className="agent-steps__item" key={i}>
-                          <span className="agent-steps__index">{i + 1}.</span>
-                          {describeToolCall(s)}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {m.role === "assistant" && m.createdDocuments && m.createdDocuments.length > 0 && (
-                    <div className="created-docs">
-                      <div className="created-docs__title">Созданные документы</div>
-                      {m.createdDocuments.map((d) => (
-                        <div className="created-doc" key={d.document_id}>
-                          <span className="created-doc__icon">{fileIcon(d.file_type)}</span>
-                          <span className="created-doc__name" title={d.filename}>
-                            {d.filename}
+                      {m.agentSteps.map((s) => (
+                        <div className="agent-steps__item" key={s.step_id}>
+                          <span className="agent-steps__icon">
+                            {s.status === "running" ? "⏳" : s.status === "error" ? "✗" : "✓"}
                           </span>
-                          <button
-                            type="button"
-                            className="created-doc__btn"
-                            onClick={() => void downloadDocument(d.document_id, d.filename)}
-                          >
-                            Скачать
-                          </button>
+                          {s.message}
                         </div>
                       ))}
                     </div>
                   )}
+                  {m.role === "assistant" &&
+                    (() => {
+                      // Live-created docs (from the stream) plus any file this
+                      // message produced earlier and restored from the backend
+                      // on reload — so the card survives F5 / reopening the chat.
+                      const restored = m.documentId
+                        ? documents.find((d) => d.id === m.documentId)
+                        : undefined;
+                      const createdDocs = [...(m.createdDocuments || [])];
+                      if (
+                        restored &&
+                        !createdDocs.some((d) => d.document_id === restored.id)
+                      ) {
+                        createdDocs.push({
+                          document_id: restored.id,
+                          filename: restored.original_filename,
+                          file_type: restored.file_type,
+                        });
+                      }
+                      if (createdDocs.length === 0) return null;
+                      return (
+                        <div className="created-docs">
+                          <div className="created-docs__title">Созданные документы</div>
+                          {createdDocs.map((d) => (
+                            <div className="created-doc" key={d.document_id}>
+                              <span className="created-doc__icon">{fileIcon(d.file_type)}</span>
+                              <span className="created-doc__name" title={d.filename}>
+                                {d.filename}
+                              </span>
+                              <button
+                                type="button"
+                                className="created-doc__btn"
+                                onClick={() => void downloadDocument(d.document_id, d.filename)}
+                              >
+                                Скачать
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   {m.sources && m.sources.length > 0 && (
                     <div className="sources">
                       <div className="sources__title">
@@ -628,6 +747,18 @@ export default function App() {
                 </div>
               </div>
             )}
+            </div>
+            {showScrollBottom && (
+              <button
+                type="button"
+                className="chat__scroll-bottom"
+                onClick={scrollMessagesToBottom}
+                aria-label="Вниз"
+                title="Вниз"
+              >
+                ↓
+              </button>
+            )}
           </div>
 
           {notice && <div className="chat__banner chat__banner--notice">{notice}</div>}
@@ -635,6 +766,32 @@ export default function App() {
           {error && (
             <div className="chat__banner chat__banner--error" onClick={() => setError(null)}>
               {error}
+            </div>
+          )}
+
+          {contextDocs.length > 0 && (
+            <div className="chat__context-chips" aria-label="Закреплённый контекст">
+              <span className="chat__context-label">Контекст:</span>
+              {contextDocs.map((id) => (
+                <span className="context-chip" key={id}>
+                  {documents.find((d) => d.id === id)?.original_filename ?? `Документ ${id}`}
+                  <button
+                    type="button"
+                    className="context-chip__remove"
+                    onClick={() => removeContextDoc(id)}
+                    title="Убрать из контекста"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+              <button
+                type="button"
+                className="btn--link chat__context-clear"
+                onClick={() => setContextDocs([])}
+              >
+                Очистить
+              </button>
             </div>
           )}
 
@@ -652,7 +809,7 @@ export default function App() {
               multiple
               hidden
               onChange={(e) => {
-                void uploadFiles(e.target.files);
+                requestUpload(e.target.files);
                 e.target.value = "";
               }}
             />
@@ -701,6 +858,13 @@ export default function App() {
         loading={viewerLoading}
         onClose={closeViewer}
       />
+
+      {warningPending && (
+        <UploadWarning
+          onConfirm={confirmUploadWarning}
+          onClose={() => setWarningPending(null)}
+        />
+      )}
     </div>
   );
 }

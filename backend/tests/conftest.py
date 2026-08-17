@@ -137,18 +137,27 @@ def user_id(client: TestClient, identity: types.SimpleNamespace) -> int:
 @pytest.fixture(autouse=True)
 def _clean_db():
     """Isolate each test from user/chat/document rows left by previous runs."""
+    from app.core.ratelimit import throttle
     from app.database.session import SessionLocal
+    from app.models.agent_session import AgentSession
     from app.models.chat import Chat
     from app.models.chat_message import ChatMessage, ChatSummary
     from app.models.document import Document
+    from app.models.report import Report
     from app.models.user import User
 
+    # Auth throttling is keyed by the client IP, which every TestClient call
+    # reports as "testclient"; without a reset the whole suite shares one
+    # budget and bursts of registers start failing with 429.
+    throttle.reset()
     db = SessionLocal()
     try:
         db.query(ChatSummary).delete()
         db.query(ChatMessage).delete()
+        db.query(AgentSession).delete()
         db.query(Chat).delete()
         db.query(Document).delete()
+        db.query(Report).delete()
         db.query(User).delete()
         db.commit()
     finally:
@@ -158,8 +167,10 @@ def _clean_db():
     try:
         db.query(ChatSummary).delete()
         db.query(ChatMessage).delete()
+        db.query(AgentSession).delete()
         db.query(Chat).delete()
         db.query(Document).delete()
+        db.query(Report).delete()
         db.query(User).delete()
         db.commit()
     finally:

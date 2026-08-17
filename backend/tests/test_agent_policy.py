@@ -14,14 +14,12 @@ import uuid
 import zipfile
 
 import docx
-import pytest
 from fastapi.testclient import TestClient
 
 from app.database.session import SessionLocal
-from app.main import app
 from app.models.document import Document
 from app.services import gemini
-from app.services.agent import SYSTEM_INSTRUCTION, agent_service
+from app.services.agent import SYSTEM_INSTRUCTION
 
 API_PREFIX = "/api"
 
@@ -111,12 +109,12 @@ class TestSystemInstructionPolicy:
         assert "mention it only when it directly helps" in text
 
     def test_document_body_goes_into_blocks_not_chat(self):
-        # The full document must be delivered via document_spec.blocks, not as a
-        # code block in the chat reply.
+        # The full document must be delivered via the create_document 'content'
+        # argument (Markdown), not as a code block in the chat reply.
         text = SYSTEM_INSTRUCTION.lower()
-        assert "document_spec.blocks" in text
+        assert "into the 'content'" in text
         assert "never wrap the generated document in a code block" in text
-        assert "only a 'title' without 'blocks'" in text
+        assert "without 'content'" in text
 
     def test_avoids_code_block_for_plain_answers(self):
         # Goal 9: ordinary answers stay plain text.
@@ -133,7 +131,7 @@ class TestSystemInstructionPolicy:
         assert "tool call is required" in text
         assert "never claim that document generation is unavailable" in text
         assert "never substitute writing the document in the chat" in text
-        assert "put the entire document into document_spec.blocks" in text
+        assert "put the entire document into" in text
 
 
 # ---------------------------------------------------------------------------

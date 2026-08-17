@@ -87,7 +87,6 @@ def _is_list_item(line: str):
     stripped = line.lstrip()
     if stripped[:2] in (f"{c} " for c in _LIST_BULLET):
         return False, stripped[2:].strip()
-    m = None
     import re
 
     match = re.match(r"^\s*\d+\.\s+(.*)$", stripped)

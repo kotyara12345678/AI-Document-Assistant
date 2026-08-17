@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.document import Document
 from app.services import extraction
+from app.services.entity_locks import lock_for
 from app.services.indexing import delete_document_index, index_document
 
 logger = logging.getLogger("app.documents")
@@ -37,6 +39,24 @@ def _sanitize_original_filename(filename: str | None) -> str:
     return name or "untitled"
 
 
+# Control characters (incl. NUL 0x00) that PostgreSQL TEXT columns reject and
+# that PyMuPDF's text extraction can emit for embedded Unicode (Identity-H)
+# fonts lacking a ToUnicode map. Whitespace \t \n \r is preserved.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _strip_control_chars(text: str | None) -> str:
+    """Drop NUL/control characters so extracted text is safe to persist/index.
+
+    The binary PDF payload is stored on disk (write_bytes) and is unaffected;
+    only the derived ``content`` text column is cleaned. This is purely a
+    storage-safety measure -- it does not alter the rendered document.
+    """
+    if not text:
+        return ""
+    return _CONTROL_CHAR_RE.sub("", text)
+
+
 def _read_upload_bounded(file: UploadFile) -> bytes:
     """Read the upload in chunks, refusing early once it exceeds the limit.
 
@@ -60,11 +80,14 @@ def _read_upload_bounded(file: UploadFile) -> bytes:
     return b"".join(blocks)
 
 
-def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
-    """Persist an uploaded file, extract its text and store a Document record.
+def _process_upload(file: UploadFile) -> tuple[str, str, bytes, str]:
+    """Validate one uploaded file and extract its text, without persisting.
 
-    The binary file is saved to the uploads volume; PostgreSQL stores only
-    metadata and the extracted plain text.
+    Returns ``(original_filename, file_type, content, extracted_text)`` and
+    raises the same HTTP 4xx as the old inline checks. Splitting validation
+    from persistence lets a multi-file request abort cleanly BEFORE any file of
+    the batch is written, so a bad file can never leave earlier files of the
+    same batch half-committed.
     """
     original_filename = _sanitize_original_filename(file.filename)
     file_type = _validate_extension(original_filename)
@@ -86,6 +109,62 @@ def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
             detail="No text could be extracted from the file",
         )
 
+    return original_filename, file_type, content, extracted
+
+
+def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
+    """Persist an uploaded file, extract its text and store a Document record.
+
+    The binary file is saved to the uploads volume; PostgreSQL stores only
+    metadata and the extracted plain text.
+    """
+    original_filename, file_type, content, extracted = _process_upload(file)
+    return persist_file(
+        content,
+        file_type,
+        user_id,
+        db,
+        original_filename=original_filename,
+        content_text=extracted,
+    )
+
+
+def persist_file(
+    content: bytes,
+    file_type: str,
+    user_id: int,
+    db: Session,
+    *,
+    original_filename: str,
+    content_text: str | None = None,
+    source_file_id: int | None = None,
+    chat_id: int | None = None,
+) -> Document:
+    """Write a file to storage and create its Document row (shared by uploads,
+    generated documents and edited documents).
+
+    The original is never overwritten: the payload is written under a fresh
+    server-generated UUID. ``source_file_id`` records the immutable original a
+    generated/edited file was derived from; ``chat_id`` links the file to the
+    chat that produced it. Both are informational and nullable so the file
+    itself survives chat/original deletion.
+    """
+    original_filename = _sanitize_original_filename(original_filename)
+    if file_type not in settings.ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type '.{file_type}'.",
+        )
+
+    if content_text is None:
+        try:
+            content_text = extraction.extract_text(content, file_type)
+        except Exception:
+            content_text = ""
+    # Extracted text may carry NUL/control chars (e.g. from embedded Unicode
+    # fonts); strip them so the TEXT column and the search index stay valid.
+    content_text = _strip_control_chars(content_text)
+
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -100,14 +179,16 @@ def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
         file_type=file_type,
         file_size=len(content),
         filepath=str(filepath),
-        content=extracted,
+        content=content_text,
+        chat_id=chat_id,
+        source_file_id=source_file_id,
     )
     db.add(document)
     db.commit()
     db.refresh(document)
 
-    # Indexing must not break the upload: the Document record is already
-    # committed, so failures here are logged and reported separately.
+    # Indexing must not break creation: the Document row is already committed,
+    # so failures here are logged and reported separately.
     try:
         index_document(document)
     except Exception:
@@ -119,9 +200,10 @@ def store_upload(file: UploadFile, user_id: int, db: Session) -> Document:
 def store_uploads(files: list[UploadFile], user_id: int, db: Session) -> list[Document]:
     """Persist several uploaded files in a single request.
 
-    Enforces the per-request file count limit first and validates every
-    filename/extension before any file is persisted, so a bad file can never
-    leave earlier files of the same batch half-committed.
+    Enforces the per-request file count limit and fully validates and extracts
+    EVERY file before any of them is persisted, so a bad file (empty, wrong
+    magic bytes, unreadable) aborts the whole batch without leaving earlier
+    files of the same request half-committed.
     """
     if len(files) > settings.MAX_UPLOAD_FILES:
         raise HTTPException(
@@ -132,10 +214,19 @@ def store_uploads(files: list[UploadFile], user_id: int, db: Session) -> list[Do
             ),
         )
 
-    for upload in files:
-        _validate_extension(_sanitize_original_filename(upload.filename))
+    processed = [_process_upload(upload) for upload in files]
 
-    return [store_upload(upload, user_id, db) for upload in files]
+    return [
+        persist_file(
+            content,
+            file_type,
+            user_id,
+            db,
+            original_filename=original_filename,
+            content_text=extracted,
+        )
+        for original_filename, file_type, content, extracted in processed
+    ]
 
 
 def _validate_magic_bytes(content: bytes, declared_type: str) -> None:
@@ -155,7 +246,12 @@ def list_documents(user_id: int, db: Session) -> list[Document]:
 
 
 def delete_document(document_id: int, user_id: int, db: Session) -> Document:
-    """Remove a document: its vectors from Qdrant, its file from disk and its DB row."""
+    """Remove a document: its vectors from Qdrant, its file from disk and its DB row.
+
+    Runs under the per-document index/delete lock so a re-index of the same
+    document in flight cannot resurrect ghost vectors after the cleanup (see
+    indexing.index_document for the lock pairing).
+    """
     document = (
         db.query(Document)
         .filter(Document.id == document_id, Document.user_id == user_id)
@@ -167,9 +263,10 @@ def delete_document(document_id: int, user_id: int, db: Session) -> Document:
             detail="Document not found",
         )
 
-    _remove_vectors_and_file(document)
-    db.delete(document)
-    db.commit()
+    with lock_for(document.id):
+        _remove_vectors_and_file(document)
+        db.delete(document)
+        db.commit()
     return document
 
 
@@ -177,7 +274,8 @@ def delete_all_documents(user_id: int, db: Session) -> int:
     """Remove every document of a user: vectors, files and DB rows. Returns count."""
     documents = db.query(Document).filter(Document.user_id == user_id).all()
     for document in documents:
-        _remove_vectors_and_file(document)
+        with lock_for(document.id):
+            _remove_vectors_and_file(document)
     count = len(documents)
     db.query(Document).filter(Document.user_id == user_id).delete(synchronize_session=False)
     db.commit()

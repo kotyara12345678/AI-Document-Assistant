@@ -10,7 +10,6 @@ import json
 import uuid
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
@@ -288,6 +287,51 @@ def _insert_document(user_id: int, filename: str, content: str, file_type: str =
         return doc.id
     finally:
         db.close()
+
+
+def test_agent_lists_all_documents_not_just_chat_memory(client, monkeypatch, user_id):
+    """«Перечисли мне список всех моих файлов» must trigger list_documents and
+    the tool must return EVERY document of the user (all 15), because the DB
+    listing — not search hits or chat memory — is the source of truth."""
+    names = [f"file_{index:02d}.txt" for index in range(1, 16)]
+    for name in names:
+        _insert_document(user_id, name, f"document {name} contents")
+
+    list_msg = _tool_call_message("list_documents", "{}")
+    final_answer = "\n".join(f"- {name}" for name in names)
+    final_msg = {"content": final_answer}
+    calls = _scripted_functions(monkeypatch, [(list_msg, "s"), (final_msg, None)])
+
+    resp = client.post(
+        f"{API_PREFIX}/agent", json={"question": "Перечисли мне список всех моих файлов"}
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    # list_documents was called (not search_documents/RAG).
+    assert len(data["tool_calls"]) == 1
+    assert data["tool_calls"][0]["name"] == "list_documents"
+
+    # The tool was advertised to the model and the listing rule is in the prompt.
+    names_advertised = {f["name"] for f in calls[0]["functions"]}
+    assert "list_documents" in names_advertised
+    assert "list_documents" in calls[0]["messages"][0]["content"]
+
+    # The tool result contains ALL 15 documents with id/filename/type/date.
+    result = data["tool_results"][0]
+    assert result["name"] == "list_documents"
+    content = json.loads(result["content"])
+    assert len(content) == 15
+    for entry in content:
+        assert "document_id" in entry
+        assert "filename" in entry
+        assert "type" in entry
+        assert "created_at" in entry
+    filenames = {entry["filename"] for entry in content}
+    assert filenames == set(names)
+
+    # The final answer the model produced enumerates every file.
+    assert data["answer"] == final_answer
 
 
 def test_agent_calls_read_document(client, monkeypatch, user_id):
@@ -619,11 +663,11 @@ def test_create_document_rejects_oversized_spec(client, monkeypatch):
 
 def test_create_document_bad_format(client, monkeypatch):
     """An unsupported output format is rejected."""
-    create_msg = _create_call({"title": "Док"}, output_format="pdf")
+    create_msg = _create_call({"title": "Док"}, output_format="pptx")
     final_msg = {"content": "Не получилось."}
     _scripted_functions(monkeypatch, [(create_msg, "s"), (final_msg, None)])
 
-    resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай pdf"})
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай pptx"})
     assert resp.status_code == 200, resp.text
     result = json.loads(resp.json()["tool_results"][0]["content"])
     assert result["success"] is False
@@ -840,12 +884,14 @@ def test_agent_answers_general_question_without_create(client, monkeypatch):
     assert "Налоговый кодекс" in data["answer"]
 
 
-def test_agent_unsupported_format_is_never_generated(client, monkeypatch, user_id):
-    """'создай PDF': even if the model passes pdf, the system must NOT create
-    a pdf — it returns a safe structured error so the model can honestly say
-    only docx/odt are supported, and no pdf document row is created."""
-    create_msg = _create_call({"title": "Док", "blocks": []}, output_format="pdf")
-    final_msg = {"content": "PDF пока не поддерживается. Могу создать DOCX или ODT."}
+def test_agent_generates_pdf(client, monkeypatch, user_id):
+    """'создай pdf': the model passes output_format='pdf' and a real PDF
+    document is created and registered for the user."""
+    create_msg = _create_call(
+        {"title": "Договор", "blocks": [{"type": "paragraph", "text": "Условия PDF-договора."}]},
+        output_format="pdf",
+    )
+    final_msg = {"content": "PDF готов."}
     _scripted_functions(monkeypatch, [(create_msg, "s"), (final_msg, None)])
 
     resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай pdf документ"})
@@ -853,8 +899,7 @@ def test_agent_unsupported_format_is_never_generated(client, monkeypatch, user_i
     data = resp.json()
 
     result = json.loads(data["tool_results"][0]["content"])
-    assert result["success"] is False
-    assert "unsupported output format" in result["error"]
+    assert result["success"] is True
     assert data["answer"] == final_msg["content"]
 
     from app.database.session import SessionLocal
@@ -862,14 +907,18 @@ def test_agent_unsupported_format_is_never_generated(client, monkeypatch, user_i
 
     db = SessionLocal()
     try:
-        pdf_docs = (
+        doc = (
             db.query(Document)
             .filter(Document.user_id == user_id, Document.file_type == "pdf")
-            .count()
+            .first()
         )
     finally:
         db.close()
-    assert pdf_docs == 0
+    assert doc is not None
+    assert doc.original_filename.endswith(".pdf")
+    from pathlib import Path
+
+    assert Path(doc.filepath).read_bytes().startswith(b"%PDF")
 
 
 def test_create_document_from_markdown_content(client, monkeypatch, user_id):
@@ -927,4 +976,361 @@ def test_markdown_to_spec_parses_structure():
     assert types[3].startswith("List")
     assert types[4].startswith("Table")
     assert spec.blocks[4].rows == [["Аня", "30"]]
+
+
+def test_create_document_md_and_txt(client, monkeypatch):
+    """create_document with output_format 'md'/'txt' saves a real downloadable file."""
+    for fmt in ("md", "txt"):
+        create_msg = _tool_call_message(
+            "create_document",
+            {
+                "title": "Заметка",
+                "content": "# Заметка\n\nПростой текст для проверки.",
+                "output_format": fmt,
+            },
+        )
+        final_msg = {"content": "готово"}
+        _scripted_functions(monkeypatch, [(create_msg, "s"), (final_msg, None)])
+
+        resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай заметку"})
+        assert resp.status_code == 200, resp.text
+        result = json.loads(resp.json()["tool_results"][0]["content"])
+        assert result["success"] is True, result
+        assert result["file_type"] == fmt
+        assert result["filename"].endswith(f".{fmt}")
+
+        doc = _get_document(result["document_id"])
+        assert doc is not None
+        assert "Простой текст для проверки" in doc.content
+        if fmt == "md":
+            assert doc.content.startswith("# Заметка")
+
+
+# --- agent memory + realtime streaming ---------------------------------------
+
+
+def _collect_events(question: str, user_id: int, monkeypatch, script):
+    """Drive run_agent_stream with scripted GigaChat turns and return events."""
+    _scripted_functions(monkeypatch, script)
+    from app.schemas.agent import AgentRequest
+
+    events = list(agent_service.run_agent_stream(AgentRequest(question=question), user_id=user_id))
+    return events
+
+
+def test_agent_stream_emits_realtime_events(client, monkeypatch, user_id):
+    """search/read/create each emit running+completed steps, then document_created
+    and final — and NO chain-of-thought is ever emitted (M)."""
+    search_msg = _tool_call_message("search_documents", {"query": "шаблон"})
+    read_msg = _tool_call_message("read_document", {"document_id": 1})
+    create_msg = _tool_call_message(
+        "create_document",
+        {"title": "Договор", "content": "# Договор\n\nТекст.", "output_format": "docx"},
+    )
+    final_msg = {"content": "Готово."}
+    events = _collect_events(
+        "создай договор",
+        user_id,
+        monkeypatch,
+        [(search_msg, "s"), (read_msg, "s"), (create_msg, "s"), (final_msg, None)],
+    )
+
+    types = [e["type"] for e in events]
+    assert "final" in types
+    # Every emitted event is a safe action log event, never a thought/reasoning.
+    for e in events:
+        assert e["type"] in {"agent_step", "document_created", "final"}
+        assert set(e.keys()) <= {
+            "type", "step_id", "status", "tool", "message",
+            "content", "sources", "chat_id", "document_id", "filename", "download_url",
+        }
+
+    steps = [e for e in events if e["type"] == "agent_step"]
+    tools_seen = [s["tool"] for s in steps if s["status"] == "running"]
+    assert "search_documents" in tools_seen
+    assert "read_document" in tools_seen
+    assert "create_document" in tools_seen
+
+    created = [e for e in events if e["type"] == "document_created"]
+    assert created, "document_created event expected for a successful create"
+    assert isinstance(created[0]["document_id"], int)
+    assert created[0]["document_id"] > 0
+    assert created[0]["download_url"].endswith("/file")
+
+
+def test_agent_step_error_event_on_tool_failure(client, monkeypatch, user_id):
+    """A failing tool call surfaces as a separate error step event (L)."""
+    bad_read = _tool_call_message("read_document", {"document_id": 999999})
+    final_msg = {"content": "не смог прочитать"}
+    events = _collect_events(
+        "прочитай документ 999999",
+        user_id,
+        monkeypatch,
+        [(bad_read, "s"), (final_msg, None)],
+    )
+    steps = [e for e in events if e["type"] == "agent_step"]
+    assert any(s["tool"] == "read_document" and s["status"] == "error" for s in steps)
+
+
+def test_agent_memory_restores_context_across_turns(client, monkeypatch, user_id):
+    """The second turn receives the prior conversation + persisted task state (A, E)."""
+    create_msg = _tool_call_message(
+        "create_document",
+        {"title": "Договор", "content": "# Договор\n\nТекст.", "output_format": "docx"},
+    )
+    final1 = {"content": "создал"}
+    final2 = {"content": "ok"}
+
+    def fake1(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+        return (create_msg, "s") if messages[-1]["role"] == "user" and "создай" in messages[-1]["content"] else (final1, None)
+
+    monkeypatch.setattr(gemini, "chat_with_functions", fake1)
+    events1 = list(agent_service.run_agent_stream(_req("создай договор"), user_id=user_id))
+    chat_id = next(e["chat_id"] for e in events1 if e["type"] == "final")
+
+    calls2: list = []
+
+    def fake2(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+        calls2.append(list(messages))
+        return final2, None
+
+    monkeypatch.setattr(gemini, "chat_with_functions", fake2)
+    list(agent_service.run_agent_stream(_req("что с документом", chat_id=chat_id), user_id=user_id))
+
+    assert calls2, "second turn should have called the model"
+    last_messages = calls2[0]
+    roles = [m["role"] for m in last_messages]
+    assert "user" in roles and roles.count("user") >= 2
+    assert any(
+        m.get("role") == "system" and "Контекст задачи" in m["content"]
+        for m in last_messages
+    )
+
+
+def test_new_chat_has_clean_context(client, monkeypatch, user_id):
+    """A brand-new chat starts with no injected task/document context (D)."""
+    calls: list = []
+
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+        calls.append(list(messages))
+        return {"content": "привет"}, None
+
+    monkeypatch.setattr(gemini, "chat_with_functions", fake)
+    list(agent_service.run_agent_stream(_req("привет"), user_id=user_id))
+    assert calls
+    roles = [m["role"] for m in calls[0]]
+    assert roles == ["system", "user"]
+
+
+def test_search_result_carries_normalized_metadata(client, monkeypatch, user_id):
+    """search_documents results expose id/name/type/size/date metadata (C)."""
+    from app.database.session import SessionLocal
+    from app.models.document import Document
+
+    db = SessionLocal()
+    try:
+        doc = Document(
+            user_id=user_id,
+            filename="stored.docx",
+            original_filename="Doc_алексей.docx",
+            file_type="docx",
+            file_size=1234,
+            filepath="/tmp/x.docx",
+            content="данные сотрудника",
+        )
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+    finally:
+        db.close()
+
+    class _Src:
+        document_id = doc_id
+        filename = "Doc_алексей.docx"
+        score = 0.9
+        text = "данные сотрудника"
+
+    class _Chunk:
+        source = _Src()
+
+    monkeypatch.setattr(
+        "app.services.agent.retrieve_context",
+        lambda *a, **k: [_Chunk()],
+    )
+
+    hits = agent_service._search_documents(user_id, "алексей", None)
+    assert hits
+    hit = hits[0]
+    assert hit["document_id"] == doc_id
+    assert hit["filename"] == "Doc_алексей.docx"
+    assert hit["type"] == "docx"
+    assert hit["file_size"] == 1234
+    assert hit["owner_id"] == user_id
+    assert "created_at" in hit
+    assert hit["content_available"] is True
+
+
+def _req(question: str, chat_id: int | None = None):
+    from app.schemas.agent import AgentRequest
+
+    return AgentRequest(question=question, chat_id=chat_id)
+
+
+# --------------------------------------------------------------------------- #
+# Explicit (pinned) context: edit_document must use the attached document id
+# --------------------------------------------------------------------------- #
+
+
+def _make_pdf_with_text(text: str) -> bytes:
+    import fitz
+    import io
+
+    doc = fitz.open()
+    doc.new_page()
+    doc[0].insert_text(fitz.Point(50, 50), text)
+    buf = io.BytesIO()
+    doc.save(buf, garbage=4, deflate=True)
+    content = buf.getvalue()
+    doc.close()
+    return content
+
+
+def _seed_pdf(
+    user_id: int, data: bytes, original_filename: str = "manual.pdf"
+) -> tuple[int, Path]:
+    from app.database.session import SessionLocal
+    from app.models.document import Document
+
+    upload_dir = Path(settings.UPLOAD_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4().hex}.pdf"
+    path = upload_dir / stored
+    path.write_bytes(data)
+
+    db = SessionLocal()
+    try:
+        doc = Document(
+            user_id=user_id,
+            filename=stored,
+            original_filename=original_filename,
+            file_type="pdf",
+            file_size=len(data),
+            filepath=str(path),
+            content="pdf seed",
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+        return doc.id, path
+    finally:
+        db.close()
+
+
+def test_agent_uses_pinned_pdf_context_for_edit(client, monkeypatch, user_id):
+    """A single pinned document must become the edit_document target without the
+    model (or the user) ever supplying its id. Even when the scripted model
+    omits file_id, the agent resolves it from context_document_ids."""
+    pdf_id, pdf_path = _seed_pdf(user_id, _make_pdf_with_text("LXSHOW user manual."))
+    original = pdf_path.read_bytes()
+
+    # The model calls edit_document WITHOUT file_id — the agent must inject it.
+    edit_msg = _tool_call_message("edit_document", {"instruction": "Переведи на русский, уберите LXSHOW"})
+    final_msg = {"content": "Переведено."}
+    _scripted_functions(monkeypatch, [(edit_msg, "s"), (final_msg, None)])
+    # Keep the edit deterministic (no real LLM for the block rewrite).
+    monkeypatch.setattr(
+        "app.services.document_edit._request_edits",
+        lambda blocks, instruction: [f"[EDITED] {b}" for b in blocks],
+    )
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={
+            "question": (
+                "Переведи руководство пользователя на русский язык, сохраняя все "
+                "картинки и верстку. Убери все упоминания LXSHOW. Отдай переведённый "
+                "документ в формате pdf ОБЯЗАТЕЛЬНО"
+            ),
+            "context_document_ids": [pdf_id],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    # Exactly one tool ran: edit_document on the pinned PDF. No search_documents
+    # (explicit context > RAG), and the model was never asked for an id.
+    tool_names = {c["name"] for c in data["tool_calls"]}
+    assert tool_names == {"edit_document"}
+    assert data["tool_calls"][0]["arguments"].get("file_id") == pdf_id
+
+    result = json.loads(data["tool_results"][0]["content"])
+    assert result["success"] is True
+    assert result["file_type"] == "pdf"
+    assert result["source_file_id"] == pdf_id
+    # Original on disk is untouched.
+    assert pdf_path.read_bytes() == original
+
+
+def test_agent_ignores_unpinned_docs_when_one_pinned(client, monkeypatch, user_id):
+    """A pinned PDF must be edited directly; an unrelated library doc (Savvaland)
+    must never be searched or read, and must not appear anywhere in the trace."""
+    pdf_id, pdf_path = _seed_pdf(user_id, _make_pdf_with_text("LXSHOW manual."))
+    decoy_id = _insert_document(user_id, "Savvaland.txt", "unrelated text", file_type="txt")
+    original_pdf = pdf_path.read_bytes()
+
+    # Stub the block rewrite so no real LLM is needed.
+    monkeypatch.setattr(
+        "app.services.document_edit._request_edits",
+        lambda blocks, instruction: [f"[EDITED] {b}" for b in blocks],
+    )
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={
+            "question": (
+                "Переведи этот документ на русский язык. Убери LXSHOW. Верни PDF."
+            ),
+            "context_document_ids": [pdf_id],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    tool_names = {c["name"] for c in data["tool_calls"]}
+    assert tool_names == {"edit_document"}, tool_names
+    assert data["tool_calls"][0]["arguments"].get("file_id") == pdf_id
+    # The decoy is never referenced.
+    assert str(decoy_id) not in str(data)
+
+    result = json.loads(data["tool_results"][0]["content"])
+    assert result["success"] is True
+    assert result["source_file_id"] == pdf_id
+    assert pdf_path.read_bytes() == original_pdf
+
+
+def test_agent_resolves_named_pinned_doc_among_many(client, monkeypatch, user_id):
+    """With several pinned docs, a request that names one resolves to it."""
+    manual_id, _ = _seed_pdf(user_id, _make_pdf_with_text("manual body"))
+    source_id, _ = _seed_pdf(
+        user_id, _make_pdf_with_text("source body"), original_filename="source.pdf"
+    )
+
+    edit_msg = _tool_call_message("edit_document", {"instruction": "Переведи manual.pdf"})
+    final_msg = {"content": "Переведено."}
+    _scripted_functions(monkeypatch, [(edit_msg, "s"), (final_msg, None)])
+    monkeypatch.setattr(
+        "app.services.document_edit._request_edits",
+        lambda blocks, instruction: [f"[EDITED] {b}" for b in blocks],
+    )
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={
+            "question": "Переведи manual.pdf на русский",
+            "context_document_ids": [manual_id, source_id],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["tool_calls"][0]["arguments"].get("file_id") == manual_id
 

@@ -12,9 +12,11 @@ RUN groupadd --system app && useradd --system --gid app app \
     && mkdir -p /data/uploads /data/hf && chown -R app:app /data
 
 # ca-certificates + curl are needed to install the Ministry of Digital
-# Development CA used by GigaChat TLS.
+# Development CA used by GigaChat TLS. fonts-dejavu-core provides a
+# Cyrillic-capable Unicode TTF (DejaVuSans) used to render translated Russian
+# text in edited PDFs.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # CPU-only torch first (the default wheel bundles CUDA, which we don't need)
@@ -34,10 +36,11 @@ RUN curl -k -sSf "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.c
 
 COPY . .
 
-RUN chown -R app:app /app
+RUN chmod +x entrypoint.sh \
+    && chown -R app:app /app
 
 USER app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/entrypoint.sh"]

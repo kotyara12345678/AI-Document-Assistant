@@ -80,9 +80,10 @@ def test_chat_with_document_filter(client, fake_gemini):
     doc_a = resp_a.json()[0]["id"]
 
     text_b = (
-        f"Документ про велосипеды. Горные велосипеды стоят 50000 рублей."
+        "Документ про велосипеды. Горные велосипеды стоят 50000 рублей."
     ) * 20
     resp_b = _upload(client, "bikes.txt", text_b.encode("utf-8"))
+    assert resp_b.status_code == 201, resp_b.text
 
     chat_resp = client.post(
         f"{API_PREFIX}/chat",
@@ -114,7 +115,6 @@ def test_chat_degraded_when_gemini_fails(client, monkeypatch):
     ) * 20
     resp = _upload(client, "degrade.txt", text.encode("utf-8"))
     assert resp.status_code == 201
-    document_id = resp.json()[0]["id"]
 
     def failing_gemini(prompt, system_instruction=None, client=None, history=None, summary=None):
         raise gemini.GeminiError("boom")
@@ -176,7 +176,6 @@ def test_history_rolling_summary(client, monkeypatch):
     monkeypatch.setattr(gemini, "generate_answer", summarizing_gemini)
 
     # Force a low threshold so the summary kicks in within a handful of turns.
-    from app.services import chat as chat_service
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "CHAT_SUMMARY_THRESHOLD", 2)

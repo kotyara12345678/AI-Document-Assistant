@@ -1,10 +1,12 @@
 """Agent layer: the LLM decides when to search, read and create documents.
 
-GigaChat is exposed to three tools via native function calling:
+GigaChat is exposed to four tools via native function calling:
 
 * ``search_documents(query)`` — hybrid retrieval over the user's library;
 * ``read_document(document_id, offset)`` — bounded reads of a found document;
-* ``create_document(document_spec, output_format)`` — generate a docx/odt
+* ``list_documents()`` — enumerate ALL of the user's documents (authoritative
+  source for "which files do I have" questions);
+* ``create_document(document_spec, output_format)`` — generate a docx/odt/pdf/md/txt
   file from a structured, validated spec.
 
 The agent loop is deliberately small:
@@ -22,6 +24,7 @@ executed) and the owner is always taken from the request context.
 
 import json
 import logging
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -29,10 +32,24 @@ from app.core.config import settings
 from app.schemas.agent import (
     AgentRequest,
     AgentResponse,
+    AgentStep,
     AgentToolCall,
     AgentToolResult,
 )
-from app.services import gemini
+from app.services import agent_state, gemini
+from app.services.chat import _recent_history, _save_message, resolve_chat
+from app.services.deterministic_doc import (
+    build_spec_from_task,
+    detect_deterministic_document_task,
+)
+from app.services.errors import (
+    DocumentEditError,
+    DocumentError,
+    DocumentRegistrationError,
+    DocumentSaveError,
+    DocumentSpecError,
+    RendererError,
+)
 from app.services.retrieval import retrieve_context
 
 logger = logging.getLogger("app.agent")
@@ -68,10 +85,21 @@ SYSTEM_INSTRUCTION = (
     "choose 'docx' by default and create a small demo document (a title plus "
     "a few paragraphs); do not ask clarifying questions; after creating, tell "
     "the user the document is ready. "
-    "Unsupported format: create_document supports only 'docx' and 'odt'. If "
-    "the user asks for another format such as PDF, do NOT call create_document "
-    "with an unsupported format — briefly say that format is not supported "
-    "yet and offer docx or odt. "
+    "Output formats for GENERATION: create_document (building a NEW document "
+    "from a template or from scratch) supports 'docx', 'odt', 'pdf', 'md' and "
+    "'txt'. When "
+    "the user asks to GENERATE a brand-new PDF ('создай PDF-договор', 'сформируй "
+    "файл в PDF'), call create_document with output_format 'pdf'. When the "
+    "user asks for a Markdown file ('создай MD', 'сформируй файл в формате "
+    "Markdown') use output_format 'md'; for a plain text file ('создай TXT', "
+    "'сделай текстовый файл') use 'txt'. EDITING an "
+    "existing document never changes its format: edit_document preserves the "
+    "format of the file you edit — including PDF — and returns a NEW file in "
+    "that same format (editing a PDF yields a PDF, keeping images and layout "
+    "as far as the format allows). So whenever the user wants to translate, "
+    "rewrite or otherwise modify an uploaded document and keep or request PDF, "
+    "use edit_document — never create_document and never suggest docx/odt "
+    "instead. "
     "Distinguish answer vs create: 'расскажи, что такое трудовой договор' is "
     "a plain answer; 'сгенерируй трудовой договор' is create_document; "
     "'сгенерируй трудовой договор по данным из документа' is search -> read "
@@ -123,15 +151,49 @@ SYSTEM_INSTRUCTION = (
     "with fictional demo data. "
     "User: «Сколько зарплата у Сергея?» -> search_documents -> read_document "
     "-> answer. "
-    "User: «Создай PDF» -> do not call create_document with PDF; state PDF is "
-    "not supported yet and offer docx/odt. "
+    "User: «Перечисли мне список всех моих файлов» -> list_documents -> "
+    "enumerate every returned file. "
+    "User: «Создай с нуля PDF-договор» (GENERATE a brand-new PDF) -> create_document "
+    "with output_format 'pdf'. User: «переведи этот PDF на русский» or "
+    "«отредактируй PDF и верни в PDF» -> edit_document (keeps PDF, returns a new PDF, "
+    "original untouched). "
     "Proactive retrieval: any question about a specific person, employee, "
     "project, amount, date or fact that could live in the user's files is "
     "presumed to need retrieval — search even if the user never says 'find' or "
     "'document'; never answer such questions from memory. "
+    "DOCUMENT LISTING RULE: when the user asks to list, enumerate, count or "
+    "name their files or documents ('перечисли все мои файлы', 'покажи список "
+    "документов', 'сколько у меня файлов', 'какие документы у меня есть', "
+    "'имена моих файлов'), this is a filesystem/document-listing request: you "
+    "MUST call list_documents FIRST. The tool result is the ONLY source of "
+    "truth about the set of the user's documents: enumerate EVERY document the "
+    "tool returns (id, name, type, date) and never skip one. Never compose the "
+    "list from conversation memory or from documents mentioned earlier in the "
+    "chat, and never use search_documents/RAG results for listing (search "
+    "returns only the most relevant subset). Never invent documents the tool "
+    "did not return and never claim there are other documents besides the "
+    "tool's result: if list_documents returns N documents, the user has "
+    "exactly N. "
     "Metadata: when you answer, use the metadata the tools return (file name, "
     "type, dates, sizes) and never invent metadata; mention it only when it "
     "directly helps the answer. "
+    "EDITING EXISTING FILES: when the user wants to CHANGE an existing uploaded "
+    "file ('сделай этот документ понятнее', 'перепиши коротким русским языком', "
+    "'удали упоминания X из этого файла', 'переведи этот документ'), you MUST "
+    "call edit_document with that file's document_id and a clear editing "
+    "instruction. edit_document copies the file and edits only the copy, so the "
+    "original is preserved and a brand-new file is returned — IN THE SAME FORMAT "
+    "as the source (editing a PDF returns a PDF; images and layout are preserved "
+    "as far as technically possible). This is NOT the same as create_document, "
+    "which builds a new document from a template or from other documents' data. "
+    "If the user explicitly asks for the edited result as PDF, edit the PDF "
+    "document with edit_document and return that PDF — do NOT switch to "
+    "create_document and do NOT offer docx/odt. If the user names a file but you "
+    "do not know its document_id, first call search_documents (or read_document) "
+    "to resolve it; never invent a document_id. If you still cannot identify the "
+    "file, ask the user which file to edit before calling edit_document. When a "
+    "document is attached via ATTACHED CONTEXT, you already have its document_id "
+    "there — use it directly as file_id and NEVER ask the user for the id. "
     "DOCUMENT GENERATION RULE: when the user asks to create, generate, compose, "
     "prepare or fill a document: (1) retrieve all required information from the "
     "user's documents; (2) read the relevant source documents; (3) call "
@@ -213,18 +275,41 @@ READ_FUNCTION = {
                 ),
             },
         },
-        "required": ["document_id"],
+"required": ["document_id"],
     },
 }
+
+
+LIST_FUNCTION = {
+    "name": "list_documents",
+    "description": (
+        "List ALL documents the user has uploaded or generated, with their id, "
+        "file name, file type and creation date. Call this whenever the user "
+        "asks to list, enumerate, count or name their files/documents "
+        "('перечисли все мои файлы', 'покажи список документов', 'сколько у "
+        "меня файлов', 'какие документы у меня есть', 'имена моих файлов'). "
+        "The result is the ONLY source of truth about which documents exist: "
+        "enumerate every document it returns. Do NOT use search_documents for "
+        "listing — it only returns the most relevant subset and must not be "
+        "used to answer listing questions. Always scoped to the current "
+        "user's library."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
 
 CREATE_FUNCTION = {
     "name": "create_document",
     "description": (
         "Create a NEW document as a real, downloadable file saved to the "
-        "user's library (.docx or .odt). REQUIRED whenever the user asks to "
-        "create, generate, prepare or form a document or file — 'создай "
+        "user's library (.docx, .odt, .pdf, .md or .txt). REQUIRED whenever the user asks "
+        "to create, generate, prepare or form a document or file — 'создай "
         "документ', 'сгенерируй', 'сделай договор', 'подготовь файл', "
-        "'сформируй документ', 'создай docx/odt', 'сделай любой документ'. "
+        "'сформируй документ', 'создай docx/odt/pdf/md/txt', 'сделай любой документ'. "
         "Call it AFTER search_documents/read_document when the user "
         "references their files; when the user allows random/demo data, use "
         "clearly fictional data instead of asking. "
@@ -235,7 +320,9 @@ CREATE_FUNCTION = {
         "(header row, a '|---|---|' separator row, then data rows) for tables. "
         "Put the real text of every section into 'content' — never leave it "
         "empty. 'title' is a short document title string. 'output_format' "
-        "accepts ONLY 'docx' or 'odt'; never pass any other value. The created "
+        "accepts 'docx', 'odt', 'pdf', 'md' or 'txt'; match it to what the "
+        "user asked for (use 'pdf' when they asked for a PDF, 'md' for "
+        "Markdown, 'txt' for plain text). The created "
         "file can be downloaded afterwards."
     ),
     "parameters": {
@@ -272,10 +359,51 @@ CREATE_FUNCTION = {
             },
             "output_format": {
                 "type": "string",
-                "description": "Target file format: 'docx' or 'odt'.",
+                "description": "Target file format: 'docx', 'odt', 'pdf', 'md' or 'txt'.",
             },
         },
         "required": ["title", "content", "output_format"],
+    },
+}
+
+
+EDIT_FUNCTION = {
+    "name": "edit_document",
+    "description": (
+        "Edit an ALREADY-UPLOADED document file owned by the user and save the "
+        "result as a NEW file. The original file is NEVER modified — a copy is "
+        "made and only the copy is changed. Use this when the user wants to "
+        "rewrite, simplify, translate, rephrase or clean up an existing file "
+        "they uploaded, e.g. 'сделай этот документ понятнее', 'перепиши этот "
+        "PDF коротким русским языком', 'удали все упоминания ADA MaX из этого "
+        "документа'. This is NOT generation from a template or from other "
+        "documents' data — for that use create_document. Pass the exact "
+        "document_id of the file to edit (resolve it with search_documents / "
+        "read_document if the user only names the file) and a clear editing "
+        "instruction in Russian. Supported formats: docx, odt, pdf, txt, md. "
+        "Never pass a path; only a document_id the backend has authorised. If the "
+        "target file is attached via ATTACHED CONTEXT, its document_id is already "
+        "given there — pass it directly as file_id and do not ask the user for it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_id": {
+                "type": "integer",
+                "description": (
+                    "Id of the existing document to edit (from search_documents / "
+                    "read_document results). The original file is never modified."
+                ),
+            },
+            "instruction": {
+                "type": "string",
+                "description": (
+                    "What to change in the document, e.g. 'сделай текст понятнее и "
+                    "короче' or 'удали все упоминания ADA MaX'."
+                ),
+            },
+        },
+        "required": ["file_id", "instruction"],
     },
 }
 
@@ -284,7 +412,13 @@ class AgentService:
     """Owns the tool registry and runs the minimal agent loop."""
 
     def functions_spec(self) -> list[dict]:
-        return [SEARCH_FUNCTION, READ_FUNCTION, CREATE_FUNCTION]
+        return [
+            SEARCH_FUNCTION,
+            READ_FUNCTION,
+            LIST_FUNCTION,
+            CREATE_FUNCTION,
+            EDIT_FUNCTION,
+        ]
 
     def run_agent(
         self,
@@ -292,22 +426,52 @@ class AgentService:
         user_id: int,
         db: Session | None = None,
     ) -> AgentResponse:
-        """Run one agent turn and return the final answer.
+        """Non-streaming wrapper around :meth:`run_agent_stream`.
 
-        The user and assistant turns are persisted to the chat referenced by
-        ``request.chat_id`` (reused/created via the shared chat service) so the
-        conversation shows up in the UI and survives a reload. ``db`` is the
-        request-scoped session; when omitted a short-lived one is opened.
+        Implemented on top of the streaming generator so memory, task state and
+        event ordering are identical to the ``/api/agent/stream`` endpoint.
+        """
+        sink: dict = {
+            "calls": [],
+            "results": [],
+            "answer": "",
+            "chat_id": 0,
+            "sources": [],
+            "agent_steps": [],
+            "created_documents": [],
+        }
+        for _ in self.run_agent_stream(request, user_id, db=db, sink=sink):
+            pass
+        return AgentResponse(
+            answer=sink["answer"],
+            tool_calls=sink["calls"],
+            tool_results=sink["results"],
+            agent_steps=sink["agent_steps"],
+            chat_id=sink["chat_id"],
+            sources=sink["sources"],
+            created_documents=sink["created_documents"],
+        )
+
+    def run_agent_stream(
+        self,
+        request: AgentRequest,
+        user_id: int,
+        db: Session | None = None,
+        sink: dict | None = None,
+    ):
+        """Run one agent turn, yielding realtime, model-safe event dicts.
+
+        Emits events of type ``agent_step`` (status ``running``/``completed``/
+        ``error``), ``document_created`` and ``final``. When ``sink`` is given it
+        is filled with the structured ``AgentResponse`` fields so the
+        non-streaming ``run_agent`` can reuse the exact same logic.
+
+        The agent is context-aware: it restores the prior conversation history
+        and the structured task/document state from the database, runs the tool
+        loop, and persists the updated state so a later turn (or a backend
+        restart) resumes the same task.
         """
         document_ids = _document_filter(request)
-        messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_INSTRUCTION},
-            {"role": "user", "content": request.question},
-        ]
-        calls: list[AgentToolCall] = []
-        results: list[AgentToolResult] = []
-        functions_state_id: str | None = None
-        answer = ""
 
         own_db = False
         if db is None:
@@ -316,11 +480,92 @@ class AgentService:
             db = SessionLocal()
             own_db = True
         try:
-            from app.services.chat import resolve_chat, _save_message
-
             chat = resolve_chat(db, user_id, request.chat_id)
             chat_id = chat.id
-            _save_message(db, user_id, chat_id, "user", request.question)
+            user_msg = _save_message(
+                db,
+                user_id,
+                chat_id,
+                "user",
+                request.question,
+                context_document_ids=request.context_document_ids,
+            )
+
+            # --- Explicit (pinned) context: hard override of target resolution
+            # When exactly one document is attached and the request is an
+            # edit/translate/modify of "this document", the target is already
+            # known. Edit it directly — no search_documents, no read of another
+            # file, no clarifying question, and never a PDF refusal. This is the
+            # strongest guarantee that explicit context > RAG.
+            explicit_ids = list(request.context_document_ids or [])
+            if len(explicit_ids) == 1 and _is_edit_intent(request.question):
+                yield from self._run_explicit_context_edit(
+                    explicit_ids[0], request, user_id, db, chat_id, sink
+                )
+                return
+
+            # --- Deterministic shortcuts: skip the LLM entirely --------------
+            # Some requests are fully determined by their wording (repeat N
+            # times, empty doc, save-this-text). We build the spec in code and
+            # render directly, so they work even when GigaChat is unavailable
+            # and always honour exact repetition counts. Architecture is
+            # unchanged: still spec -> renderer -> .docx/.odt -> save/register.
+            task = detect_deterministic_document_task(request.question)
+            if task is not None:
+                yield from self._run_deterministic(task, user_id, chat_id, sink)
+                assistant_msg = _save_message(
+                    db, user_id, chat_id, "assistant", sink.get("answer", "")
+                )
+                created = sink.get("created_documents") or []
+                if created:
+                    assistant_msg.document_id = created[-1]["document_id"]
+                    db.commit()
+                agent_state.save_state(db, user_id, chat_id, {})
+                yield {
+                    "type": "final",
+                    "content": sink.get("answer", ""),
+                    "chat_id": chat_id,
+                    "sources": [],
+                }
+                return
+
+            # --- Short-term memory: restore task state + document context -----
+            state = agent_state.load_state(db, user_id, chat_id)
+            # Build the note from the *already persisted* state (before recording
+            # the current request), so a brand-new chat stays clean and only real
+            # prior context is injected.
+            context_note = agent_state.build_context_note(state)
+            # Hard-attach the documents the user explicitly selected in the UI so
+            # the agent uses them directly instead of re-searching the library.
+            explicit_ctx = _build_explicit_context_note(request, db, user_id)
+            if explicit_ctx:
+                context_note = (
+                    f"{context_note}\n\n{explicit_ctx}".strip()
+                    if context_note
+                    else explicit_ctx
+                )
+            # GigaChat's native `functions` API accepts ONLY ONE system message;
+            # a second one returns HTTP 422 ("system message must be the first
+            # message"). Merge the note into the single system message instead of
+            # appending a second system role.
+            system_content = SYSTEM_INSTRUCTION
+            if context_note:
+                system_content = f"{SYSTEM_INSTRUCTION}\n\n{context_note}"
+            messages: list[dict] = [{"role": "system", "content": system_content}]
+            state.setdefault("task", {})["user_request"] = request.question
+
+            # --- Short-term memory: recent conversation turns ----------------
+            history = _recent_history(db, chat_id, before_id=user_msg.id)
+            messages.extend(history)
+
+            # Current user turn (the system/history above are context only).
+            messages.append({"role": "user", "content": request.question})
+
+            calls: list[AgentToolCall] = []
+            results: list[AgentToolResult] = []
+            agent_steps: list[AgentStep] = []
+            functions_state_id: str | None = None
+            answer = ""
 
             try:
                 for _ in range(max(1, settings.AGENT_MAX_TOOL_ROUNDS)):
@@ -336,9 +581,75 @@ class AgentService:
 
                     name = call.get("name", "")
                     arguments = _parse_arguments(call.get("arguments"))
-                    content = self._execute_tool(
-                        name, arguments, user_id, document_ids
+                    step_id = uuid.uuid4().hex
+
+                    # Running event: emitted BEFORE the tool runs so the UI can
+                    # show the step immediately (realtime streaming).
+                    running_msg = self._format_step_message(state, name, arguments)
+                    yield {
+                        "type": "agent_step",
+                        "step_id": step_id,
+                        "status": "running",
+                        "tool": name,
+                        "message": running_msg,
+                    }
+
+                    try:
+                        # When the user pinned documents as context, use the pinned
+                        # target directly instead of asking for an id. This makes a
+                        # single attached document the unambiguous file_id for
+                        # edit_document, and resolves a named file among several.
+                        if name == "edit_document":
+                            resolved = _resolve_explicit_file_id(
+                                request, arguments, db, user_id
+                            )
+                            if resolved is not None:
+                                arguments = {**arguments, "file_id": resolved}
+                        content = self._execute_tool(
+                            name, arguments, user_id, document_ids, chat_id=chat_id,
+                            request=request, db=db,
+                        )
+                    except Exception:
+                        logger.exception("Agent tool %s failed", name)
+                        content = json.dumps(
+                            {"error": f"{name} failed"}, ensure_ascii=False
+                        )
+
+                    self._update_state_from_tool(state, name, arguments, content)
+
+                    is_error = ('"error"' in content) or ('"success": false' in content)
+                    final_status = "error" if is_error else "completed"
+                    yield {
+                        "type": "agent_step",
+                        "step_id": step_id,
+                        "status": final_status,
+                        "tool": name,
+                        "message": self._format_step_message(state, name, arguments),
+                    }
+                    agent_steps.append(
+                        AgentStep(
+                            step_id=step_id,
+                            tool=name,
+                            message=self._format_step_message(state, name, arguments),
+                            status=final_status,
+                        )
                     )
+
+                    if name in ("create_document", "edit_document"):
+                        try:
+                            payload = json.loads(content)
+                        except ValueError:
+                            payload = {}
+                        if payload.get("success"):
+                            yield {
+                                "type": "document_created",
+                                "document_id": payload["document_id"],
+                                "filename": payload["filename"],
+                                "download_url": (
+                                    f"{settings.API_PREFIX}/documents/"
+                                    f"{payload['document_id']}/file"
+                                ),
+                            }
 
                     calls.append(AgentToolCall(name=name, arguments=arguments))
                     results.append(
@@ -363,21 +674,109 @@ class AgentService:
                 logger.exception("GigaChat failed during the agent loop")
                 answer = "[GigaChat unavailable] Please try again later."
 
-            _save_message(db, user_id, chat_id, "assistant", answer)
+            assistant_msg = _save_message(db, user_id, chat_id, "assistant", answer)
+            # Persist task/document state so the next turn (or a restart) resumes.
+            agent_state.save_state(db, user_id, chat_id, state)
+
+            # Link the assistant message to the file it produced so the file
+            # card can be restored from the database after a page reload.
+            created_documents = _derive_created_documents(results)
+            if created_documents:
+                assistant_msg.document_id = created_documents[-1]["document_id"]
+                db.commit()
+
+            sources = _derive_sources(results)
+            created_documents = _derive_created_documents(results)
+            if sink is not None:
+                sink["calls"] = calls
+                sink["results"] = results
+                sink["answer"] = answer
+                sink["chat_id"] = chat_id
+                sink["sources"] = sources
+                sink["agent_steps"] = agent_steps
+                sink["created_documents"] = created_documents
+
+            yield {
+                "type": "final",
+                "content": answer,
+                "chat_id": chat_id,
+                "sources": sources,
+            }
         finally:
             if own_db:
                 db.close()
 
-        sources = _derive_sources(results)
-        created_documents = _derive_created_documents(results)
-        return AgentResponse(
-            answer=answer,
-            tool_calls=calls,
-            tool_results=results,
-            chat_id=chat_id,
-            sources=sources,
-            created_documents=created_documents,
-        )
+    @staticmethod
+    def _format_step_message(state: dict, name: str, arguments: dict) -> str:
+        """Human-readable, model-safe label for one tool call (action log only)."""
+        a = arguments or {}
+        if name == "search_documents":
+            return f"Поиск по документам: {a.get('query', '')}"
+        if name == "read_document":
+            doc_id = a.get("document_id")
+            name_hint = ""
+            for doc in state.get("documents") or []:
+                if doc.get("id") == doc_id:
+                    name_hint = f" ({doc.get('name')})"
+                    break
+            return f"Чтение документа #{doc_id}{name_hint}"
+        if name == "list_documents":
+            return "Получение списка документов"
+        if name == "create_document":
+            return f"Создание документа ({a.get('output_format', 'docx')})"
+        return f"Действие: {name}"
+
+    def _update_state_from_tool(
+        self, state: dict, name: str, arguments: dict, content: str
+    ) -> None:
+        """Fold a tool result into the persisted task/document state."""
+        try:
+            data = json.loads(content)
+        except ValueError:
+            return
+
+        if name == "search_documents" and isinstance(data, list):
+            state.setdefault("task", {})["retrieval_completed"] = True
+            for hit in data:
+                if not isinstance(hit, dict):
+                    continue
+                did = hit.get("document_id")
+                if did is None:
+                    continue
+                meta = {
+                    k: hit.get(k)
+                    for k in ("type", "file_size", "content_length", "created_at", "owner_id")
+                    if hit.get(k) is not None
+                }
+                agent_state.remember_document(
+                    state, did, hit.get("filename", ""),
+                    doc_type=hit.get("type"), metadata=meta, read=False,
+                )
+                agent_state.remember_source(
+                    state, did, hit.get("filename", ""), hit.get("score", 0)
+                )
+        elif name == "read_document" and isinstance(data, dict) and "document_id" in data:
+            state.setdefault("task", {})["documents_read"] = True
+            meta = {
+                k: data.get(k)
+                for k in ("file_type", "file_size", "content_length", "created_at", "owner_id")
+                if data.get(k) is not None
+            }
+            agent_state.remember_document(
+                state, data["document_id"], data.get("filename", ""),
+                doc_type=data.get("file_type"), metadata=meta, read=True,
+            )
+        elif name == "create_document" and isinstance(data, dict):
+            task = state.setdefault("task", {})
+            task["generation_requested"] = True
+            if data.get("success"):
+                task["document_created"] = True
+                task["status"] = "completed"
+                task["created_document_id"] = data.get("document_id")
+                agent_state.remember_document(
+                    state, data["document_id"], data.get("filename", ""),
+                    doc_type=data.get("file_type"), read=False,
+                )
 
     def _execute_tool(
         self,
@@ -385,26 +784,91 @@ class AgentService:
         arguments: dict,
         user_id: int,
         document_ids: list[int] | None,
+        chat_id: int | None = None,
+        *,
+        request: AgentRequest | None = None,
+        db: Session | None = None,
     ) -> str:
         """Run one tool and return a compact JSON string for the model.
 
         Tool failures never crash the loop: the model receives an ``error``
         object and can answer honestly based on it.
+
+        When the user pinned documents (``request.context_document_ids``), the
+        model is NOT allowed to target a different file: ``read_document`` and
+        ``edit_document`` are forced onto the pinned set, so RAG can never be
+        used to (re)discover the target document.
         """
+        explicit = list(getattr(request, "context_document_ids", None) or [])
+
         if name == "create_document":
             try:
                 return json.dumps(
-                    self._create_document(arguments, user_id),
+                    self._create_document(arguments, user_id, chat_id=chat_id),
                     ensure_ascii=False,
                 )
             except Exception:
                 logger.exception("Agent tool create_document failed")
                 return json.dumps(
-                    {"success": False, "error": "failed to create the document"},
+                    {
+                        "success": False,
+                        "error_type": "DocumentError",
+                        "error": "failed to create the document",
+                    },
+                    ensure_ascii=False,
+                )
+
+        if name == "edit_document":
+            # Force the target onto the pinned document(s).
+            if explicit:
+                resolved = _resolve_explicit_file_id(request, arguments, db, user_id)
+                if resolved is not None:
+                    arguments = {**arguments, "file_id": resolved}
+                elif len(explicit) > 1:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error_type": "DocumentEditError",
+                            "error": (
+                                "edit_document must target one of the attached "
+                                f"documents: {explicit}"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+            try:
+                return json.dumps(
+                    self._edit_document(arguments, user_id, chat_id=chat_id, db=db),
+                    ensure_ascii=False,
+                )
+            except Exception:
+                logger.exception("Agent tool edit_document failed")
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error_type": "DocumentEditError",
+                        "error": "failed to edit the document",
+                    },
                     ensure_ascii=False,
                 )
 
         if name == "read_document":
+            if explicit:
+                arg_id = arguments.get("document_id")
+                if len(explicit) == 1:
+                    # Single pinned document is the only allowed target.
+                    arguments = {**arguments, "document_id": explicit[0]}
+                elif arg_id not in explicit:
+                    # Several pinned: only those ids may be read.
+                    return json.dumps(
+                        {
+                            "error": (
+                                "read_document must use an attached document_id; "
+                                f"attached documents: {explicit}"
+                            )
+                        },
+                        ensure_ascii=False,
+                    )
             try:
                 return json.dumps(
                     self._read_document(arguments, user_id),
@@ -414,6 +878,17 @@ class AgentService:
                 logger.exception("Agent tool read_document failed")
                 return json.dumps(
                     {"error": f"read failed: {exc}"}, ensure_ascii=False
+                )
+
+        if name == "list_documents":
+            try:
+                return json.dumps(
+                    self._list_documents(user_id), ensure_ascii=False
+                )
+            except Exception as exc:
+                logger.exception("Agent tool list_documents failed")
+                return json.dumps(
+                    {"error": f"list failed: {exc}"}, ensure_ascii=False
                 )
 
         if name != "search_documents":
@@ -476,16 +951,60 @@ class AgentService:
         return {
             "document_id": document.id,
             "filename": document.original_filename,
+            "owner_id": document.user_id,
             "file_type": document.file_type,
             "file_size": document.file_size,
             "content_length": total,
+            # ``pages`` is not tracked by the extractor; reported as unknown
+            # rather than fabricated. ``indexed``/``content_available`` reflect
+            # what the backend actually knows.
+            "pages": None,
+            "indexed": True,
+            "content_available": bool(text),
+            "created_at": document.created_at.isoformat() if document.created_at else None,
             "offset": offset,
             "length": len(window),
             "truncated": offset + len(window) < total,
             "text": window,
         }
 
-    def _create_document(self, arguments: dict, user_id: int) -> dict:
+    def _list_documents(self, user_id: int) -> list[dict]:
+        """Return a compact listing of ALL of the user's documents.
+
+        This is the authoritative answer for "which files do I have" questions:
+        every row of the user in the documents table is returned (id, name,
+        type, size, dates) with the same field shape the search/read tools use,
+        so the model maps names to document_ids without re-searching. Unlike
+        ``search_documents`` (relevance-ranked, top-k only), this never omits a
+        document and never consults RAG or conversation memory.
+        """
+        from app.database.session import SessionLocal
+        from app.services.documents import list_documents
+
+        db = SessionLocal()
+        try:
+            rows = list_documents(user_id, db)
+            return [
+                {
+                    "document_id": doc.id,
+                    "filename": doc.original_filename,
+                    "type": doc.file_type,
+                    "file_size": doc.file_size,
+                    "content_length": doc.content_length,
+                    "owner_id": doc.user_id,
+                    "content_available": bool(doc.content),
+                    "indexed": True,
+                    "pages": None,
+                    "created_at": (
+                        doc.created_at.isoformat() if doc.created_at else None
+                    ),
+                }
+                for doc in rows
+            ]
+        finally:
+            db.close()
+
+    def _create_document(self, arguments: dict, user_id: int, *, chat_id: int | None = None) -> dict:
         """Create a document file from the model's structured spec.
 
         The LLM only produces a validated DocumentSpec — never raw DOCX/ODT.
@@ -494,10 +1013,10 @@ class AgentService:
         structured ``{"success": false, "error": ...}`` object.
         """
         output_format = str(arguments.get("output_format") or "").strip().lower()
-        if output_format not in ("docx", "odt"):
+        if output_format not in ("docx", "odt", "pdf", "md", "txt"):
             return {
                 "success": False,
-                "error": f"unsupported output format: {output_format!r} (supported: docx, odt)",
+                "error": f"unsupported output format: {output_format!r} (supported: docx, odt, pdf, md, txt)",
             }
 
         # Preferred path: the model emits the document body as Markdown in
@@ -564,11 +1083,27 @@ class AgentService:
         from app.services.generation import generate_document
 
         try:
-            document = generate_document(spec, output_format, user_id)
+            document = generate_document(
+                spec, output_format, user_id, chat_id=chat_id
+            )
+        except (
+            DocumentSpecError,
+            RendererError,
+            DocumentSaveError,
+            DocumentRegistrationError,
+            DocumentError,
+        ) as exc:
+            logger.exception("Agent tool create_document failed (typed error)")
+            return {
+                "success": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
         except Exception:
             logger.exception("Agent tool create_document failed to render/save")
             return {
                 "success": False,
+                "error_type": "DocumentError",
                 "error": "failed to create the document file",
             }
 
@@ -579,6 +1114,343 @@ class AgentService:
             "file_type": document.file_type,
             "file_size": document.file_size,
         }
+
+    def _edit_document(
+        self,
+        arguments: dict,
+        user_id: int,
+        *,
+        chat_id: int | None = None,
+        db: Session | None = None,
+    ) -> dict:
+        """Edit an existing document: copy it, apply LLM text edits, save a new file.
+
+        The model only supplies the ``file_id`` (resolved from search/read) and a
+        natural-language ``instruction`` — the actual binary change is performed by
+        ``app.services.document_edit``. The original file is never written to.
+        """
+        try:
+            file_id = int(arguments.get("file_id"))
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "error_type": "DocumentEditError",
+                "error": "edit_document requires a numeric file_id",
+            }
+
+        instruction = str(arguments.get("instruction") or "").strip()
+        if not instruction:
+            return {
+                "success": False,
+                "error_type": "DocumentEditError",
+                "error": "edit_document requires a non-empty instruction",
+            }
+
+        from app.services.document_edit import edit_document
+
+        try:
+            return edit_document(file_id, instruction, user_id, db, chat_id=chat_id)
+        except DocumentEditError as exc:
+            logger.exception("Agent tool edit_document failed (typed error)")
+            return {
+                "success": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        except Exception as exc:
+            logger.exception("Agent tool edit_document failed")
+            return {
+                "success": False,
+                "error_type": "DocumentEditError",
+                "error": f"failed to edit the document: {exc}",
+            }
+
+    def _run_deterministic(
+        self,
+        task: "object",
+        user_id: int,
+        chat_id: int,
+        sink: dict | None,
+    ):
+        """Render a deterministic task WITHOUT calling GigaChat.
+
+        Builds the spec in code, validates it, renders to a real file via the
+        normal pipeline and emits the same ``agent_step`` / ``document_created``
+        / ``final`` events the LLM-driven path would. Any typed error from the
+        render/save/register steps is reported honestly with an ``error_type``.
+        """
+        step_id = uuid.uuid4().hex
+        step_msg = f"Создание документа ({getattr(task, 'output_format', 'docx')})"
+
+        from app.services.generation import generate_document
+
+        try:
+            spec = build_spec_from_task(task)  # re-validates the spec
+            document = generate_document(
+                spec, task.output_format, user_id, chat_id=chat_id
+            )
+        except (
+            DocumentSpecError,
+            RendererError,
+            DocumentSaveError,
+            DocumentRegistrationError,
+            DocumentError,
+        ) as exc:
+            logger.warning("Deterministic document generation failed: %s", exc)
+            content = json.dumps(
+                {
+                    "success": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+            )
+            yield {
+                "type": "agent_step",
+                "step_id": step_id,
+                "status": "error",
+                "tool": "create_document",
+                "message": step_msg,
+            }
+            answer = (
+                "Не удалось создать документ. Причина: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if sink is not None:
+                sink["calls"] = [
+                    AgentToolCall(
+                        name="create_document",
+                        arguments={"output_format": task.output_format, "deterministic": True},
+                    )
+                ]
+                sink["results"] = [
+                    AgentToolResult(
+                        tool_call_id="create_document",
+                        name="create_document",
+                        content=content,
+                    )
+                ]
+                sink["answer"] = answer
+                sink["chat_id"] = chat_id
+                sink["sources"] = []
+                sink["agent_steps"] = [
+                    AgentStep(
+                        step_id=step_id,
+                        tool="create_document",
+                        message=step_msg,
+                        status="error",
+                    )
+                ]
+                sink["created_documents"] = []
+            return
+
+        content = json.dumps(
+            {
+                "success": True,
+                "document_id": document.id,
+                "filename": document.original_filename,
+                "file_type": document.file_type,
+                "file_size": document.file_size,
+                "deterministic": True,
+            },
+            ensure_ascii=False,
+        )
+        yield {
+            "type": "agent_step",
+            "step_id": step_id,
+            "status": "completed",
+            "tool": "create_document",
+            "message": step_msg,
+        }
+        yield {
+            "type": "document_created",
+            "document_id": document.id,
+            "filename": document.original_filename,
+            "download_url": (
+                f"{settings.API_PREFIX}/documents/{document.id}/file"
+            ),
+        }
+        answer = f"Документ «{document.original_filename}» создан."
+        if sink is not None:
+            sink["calls"] = [
+                AgentToolCall(
+                    name="create_document",
+                    arguments={"output_format": task.output_format, "deterministic": True},
+                )
+            ]
+            sink["results"] = [
+                AgentToolResult(
+                    tool_call_id="create_document",
+                    name="create_document",
+                    content=content,
+                )
+            ]
+            sink["answer"] = answer
+            sink["chat_id"] = chat_id
+            sink["sources"] = []
+            sink["agent_steps"] = [
+                AgentStep(
+                    step_id=step_id,
+                    tool="create_document",
+                    message=step_msg,
+                    status="completed",
+                )
+            ]
+            sink["created_documents"] = [
+                {
+                    "document_id": document.id,
+                    "filename": document.original_filename,
+                    "file_type": document.file_type,
+                }
+            ]
+
+    def _run_explicit_context_edit(
+        self,
+        pinned_id: int,
+        request: AgentRequest,
+        user_id: int,
+        db: Session,
+        chat_id: int,
+        sink: dict | None,
+    ):
+        """Edit the single pinned document directly — explicit context > RAG.
+
+        No ``search_documents`` and no ``read_document`` of any other file: the
+        pinned document is the target by definition. Emits the same
+        ``agent_step`` / ``document_created`` / ``final`` events as the LLM path,
+        but the only document ever touched is ``pinned_id``.
+        """
+        from app.models.document import Document
+
+        row = (
+            db.query(Document.id, Document.original_filename)
+            .filter(Document.id == pinned_id, Document.user_id == user_id)
+            .first()
+        )
+        filename = row[1] if row else f"document {pinned_id}"
+
+        read_step = uuid.uuid4().hex
+        edit_step = uuid.uuid4().hex
+
+        yield {
+            "type": "agent_step",
+            "step_id": read_step,
+            "status": "running",
+            "tool": "read_document",
+            "message": f"Использован прикреплённый документ: {filename}",
+        }
+        yield {
+            "type": "agent_step",
+            "step_id": read_step,
+            "status": "completed",
+            "tool": "read_document",
+            "message": f"Чтение документа #{pinned_id}",
+        }
+        yield {
+            "type": "agent_step",
+            "step_id": edit_step,
+            "status": "running",
+            "tool": "edit_document",
+            "message": f"Редактирование документа #{pinned_id}",
+        }
+
+        instruction = request.question
+        content = self._edit_document(
+            {"file_id": pinned_id, "instruction": instruction},
+            user_id,
+            chat_id=chat_id,
+            db=db,
+        )
+        payload = content if isinstance(content, dict) else json.loads(content)
+
+        is_error = payload.get("success") is not True
+        yield {
+            "type": "agent_step",
+            "step_id": edit_step,
+            "status": "error" if is_error else "completed",
+            "tool": "edit_document",
+            "message": (
+                "Не удалось отредактировать документ"
+                if is_error
+                else f"Документ #{pinned_id} отредактирован"
+            ),
+        }
+
+        if not is_error and payload.get("success"):
+            yield {
+                "type": "document_created",
+                "document_id": payload["document_id"],
+                "filename": payload["filename"],
+                "download_url": (
+                    f"{settings.API_PREFIX}/documents/{payload['document_id']}/file"
+                ),
+            }
+            answer = (
+                f"Документ «{payload['filename']}» готов (переведён/отредактирован). "
+                "Исходный файл не изменён."
+            )
+        else:
+            answer = "Не удалось отредактировать прикреплённый документ."
+
+        assistant_msg = _save_message(db, user_id, chat_id, "assistant", answer)
+        if not is_error and payload.get("success"):
+            assistant_msg.document_id = payload["document_id"]
+            db.commit()
+        agent_state.save_state(db, user_id, chat_id, {})
+
+        yield {
+            "type": "final",
+            "content": answer,
+            "chat_id": chat_id,
+            "sources": [],
+        }
+
+        if sink is not None:
+            sink["answer"] = answer
+            sink["chat_id"] = chat_id
+            sink["sources"] = []
+            sink["calls"] = [
+                AgentToolCall(
+                    name="edit_document",
+                    arguments={"file_id": pinned_id, "instruction": instruction},
+                )
+            ]
+            sink["results"] = [
+                AgentToolResult(
+                    tool_call_id="edit_document",
+                    name="edit_document",
+                    content=json.dumps(content, ensure_ascii=False),
+                )
+            ]
+            sink["agent_steps"] = [
+                AgentStep(
+                    step_id=read_step,
+                    tool="read_document",
+                    message=f"Чтение документа #{pinned_id}",
+                    status="completed",
+                ),
+                AgentStep(
+                    step_id=edit_step,
+                    tool="edit_document",
+                    message=(
+                        f"Документ #{pinned_id} отредактирован"
+                        if not is_error
+                        else "Не удалось отредактировать документ"
+                    ),
+                    status="error" if is_error else "completed",
+                ),
+            ]
+            sink["created_documents"] = (
+                [
+                    {
+                        "document_id": payload["document_id"],
+                        "filename": payload["filename"],
+                        "file_type": payload.get("file_type"),
+                    }
+                ]
+                if (not is_error and payload.get("success"))
+                else []
+            )
 
     def _search_documents(
         self,
@@ -601,28 +1473,198 @@ class AgentService:
 
         hits: list[dict] = []
         seen: set[int] = set()
+        doc_ids: list[int] = []
         for chunk in chunks:
             doc_id = chunk.source.document_id
             if doc_id in seen:
                 continue
             seen.add(doc_id)
-            hits.append(
-                {
-                    "document_id": doc_id,
-                    "filename": chunk.source.filename,
-                    "score": round(chunk.source.score, 4),
-                    "snippet": chunk.source.text[:SNIPPET_MAX_CHARS],
-                }
-            )
+            doc_ids.append(doc_id)
+
+        # Normalised document metadata so the model sees id/name/type/size/date
+        # and can map a user's "use Doc_алексей" to a concrete document_id
+        # without re-searching. Nothing is fabricated: unknown fields are null.
+        from app.database.session import SessionLocal
+        from app.models.document import Document
+
+        docs_by_id: dict[int, Document] = {}
+        if doc_ids:
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(Document)
+                    .filter(Document.id.in_(doc_ids), Document.user_id == user_id)
+                    .all()
+                )
+                docs_by_id = {row.id: row for row in rows}
+            finally:
+                db.close()
+
+        emitted: set[int] = set()
+        for chunk in chunks:
+            doc_id = chunk.source.document_id
+            if doc_id in emitted:
+                continue
+            emitted.add(doc_id)
+            doc = docs_by_id.get(doc_id)
+            hit = {
+                "document_id": doc_id,
+                "filename": chunk.source.filename,
+                "score": round(chunk.source.score, 4),
+                "snippet": chunk.source.text[:SNIPPET_MAX_CHARS],
+            }
+            if doc is not None:
+                hit["type"] = doc.file_type
+                hit["file_size"] = doc.file_size
+                hit["content_length"] = doc.content_length
+                hit["created_at"] = (
+                    doc.created_at.isoformat() if doc.created_at else None
+                )
+                hit["owner_id"] = doc.user_id
+                hit["pages"] = None
+                hit["indexed"] = True
+                hit["content_available"] = bool(doc.content)
+            hits.append(hit)
         return hits
 
 
+def _is_edit_intent(question: str) -> bool:
+    """True when the user asks to change/translate/rewrite an existing document.
+
+    Used to route a single pinned document straight to ``edit_document`` without
+    the LLM first searching the library to (re)discover the target. Plain
+    questions ("о чём этот документ?") and generation requests ("создай…") are
+    intentionally NOT matched — only edit/translate/modify verbs.
+    """
+    q = (question or "").lower()
+    triggers = (
+        "перевед", "translate", "translation",
+        "отредактиру", "редактиру", "edit",
+        "перепиши", "переписать", "rewrite", "rephrase", "перефраз",
+        "улучши", "улучшить", "improve",
+        "сократи", "сократить", "shorten",
+        "понятнее", "clearer", "clean up", "упрости", "simplify",
+        "убери", "удали", "remove",
+        "исправ", "исправь", "fix",
+        "измени", "change", "modify", "переделай", "переработай",
+        "адаптируй", "adapt",
+    )
+    return any(t in q for t in triggers)
+
+
 def _document_filter(request: AgentRequest) -> list[int] | None:
+    # Explicitly attached context wins over everything else (single-document
+    # limit, multi-document limit, and RAG retrieval).
+    if request.context_document_ids:
+        return list(request.context_document_ids)
     if request.document_ids:
         return list(request.document_ids)
     if request.document_id is not None:
         return [request.document_id]
     return None
+
+
+def _resolve_explicit_file_id(
+    request: AgentRequest, arguments: dict, db: Session, user_id: int
+) -> int | None:
+    """Determine the target ``file_id`` for ``edit_document`` from explicit context.
+
+    Resolution order:
+      1. an explicit ``file_id`` the model already supplied;
+      2. the single attached document (unambiguous target);
+      3. a name match among several attached documents (the instruction names one).
+
+    Returns ``None`` only when several documents are attached and the request does
+    not name any — in that case the model may ask which file (by name).
+    """
+    raw = arguments.get("file_id")
+    if raw not in (None, "", 0):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+
+    from app.models.document import Document
+
+    explicit = list(request.context_document_ids or [])
+    if len(explicit) == 1:
+        return explicit[0]
+    if len(explicit) > 1:
+        instruction = " ".join(
+            str(arguments.get(k) or "")
+            for k in ("instruction", "content", "title", "document_spec")
+        ).lower()
+        rows = (
+            db.query(Document.id, Document.original_filename)
+            .filter(Document.id.in_(explicit), Document.user_id == user_id)
+            .all()
+        )
+        for doc_id, filename in rows:
+            name = filename.lower()
+            base = name.rsplit(".", 1)[0]
+            if name in instruction or base in instruction:
+                return doc_id
+    return None
+
+
+def _build_explicit_context_note(request: AgentRequest, db: Session, user_id: int) -> str:
+    """Inject the user-attached documents (UI chips) as a hard instruction.
+
+    The agent already restricts retrieval to ``request.context_document_ids`` via
+    ``_document_filter``, but we additionally surface the concrete document ids
+    and filenames in the system prompt so the model uses them directly for
+    reads/edits instead of re-searching the whole library. When exactly one
+    document is attached it is unambiguously the target, so we tell the model to
+    call ``edit_document`` with that ``file_id`` without asking the user.
+    """
+    ids = request.context_document_ids
+    if not ids:
+        return ""
+    from app.models.document import Document
+
+    rows = (
+        db.query(Document.id, Document.original_filename)
+        .filter(Document.id.in_(ids), Document.user_id == user_id)
+        .all()
+    )
+    if not rows:
+        return ""
+
+    if len(rows) == 1:
+        doc_id, filename = rows[0]
+        return (
+            "ATTACHED CONTEXT: the user explicitly attached exactly ONE document "
+            f'for this turn by selecting it in the interface: document_id={doc_id} '
+            f'("{filename}"). This document IS the target of the request. Use it '
+            "DIRECTLY — call edit_document(file_id=<that document_id>, "
+            "instruction=...) WITHOUT searching and WITHOUT asking the user for the "
+            "id; the id is already given above. Editing preserves the original "
+            "format (a PDF stays a PDF, keeping images and layout as far as "
+            "technically possible), so a translation/edit of this PDF yields a new "
+            "PDF. If the user only says 'translate/edit this document', that refers "
+            "to this attached document."
+        )
+
+    lines = [
+        "ATTACHED CONTEXT: the user explicitly attached the following documents for "
+        "this turn by selecting them in the interface. Treat them as the "
+        "authoritative source and prefer them over any vector search:",
+    ]
+    for doc_id, filename in rows:
+        lines.append(f'- document_id={doc_id} ("{filename}")')
+    lines.append(
+        "When the user references a specific attached file BY NAME, use its "
+        "document_id DIRECTLY as the file_id for edit_document (or document_id for "
+        "read_document) — do not search and do not ask the user for the id. For "
+        "'edit/translate this document' with several attached files, pick the one "
+        "the user named; if none is named and the target is genuinely ambiguous, "
+        "you may ask which attached file they mean — by file NAME, never by id. If "
+        "the user asks to create a document from the attached files (e.g. 'fill this "
+        "template with data from the other file'), use the named attached files as "
+        "the template and the data source. Do not search for a different document "
+        "when an attached one already satisfies the request."
+    )
+    return "\n".join(lines)
 
 
 def _derive_sources(results: list[AgentToolResult]) -> list[dict]:

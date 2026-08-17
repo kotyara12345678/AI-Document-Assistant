@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import UploadDropzone from "../UploadDropzone";
 
 const TOKEN_KEY = "docsearch-token";
+const UPLOAD_WARNING_KEY = "ada-upload-warning-seen";
+
+beforeEach(() => {
+  // Стандартные тесты: пользователь уже видел предупреждение — загрузка не блокируется.
+  localStorage.setItem(UPLOAD_WARNING_KEY, "1");
+});
 
 afterEach(() => {
   localStorage.clear();
@@ -162,5 +168,69 @@ describe("UploadDropzone authentication", () => {
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("Too many files"));
     expect(onUploaded).not.toHaveBeenCalled();
+  });
+});
+
+describe("UploadDropzone first-upload warning", () => {
+  function renderUpload() {
+    const onUploaded = vi.fn();
+    const onError = vi.fn();
+    const utils = render(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
+    const input = utils.container.querySelector('input[type="file"]') as HTMLInputElement;
+    if (!input) throw new Error("file input not rendered");
+    const pick = (files: File[]) => {
+      Object.defineProperty(input, "files", { value: files, configurable: true });
+      fireEvent.change(input);
+    };
+    return { ...utils, onUploaded, onError, pick };
+  }
+
+  it("first upload shows the warning and does not send the file until confirmed", async () => {
+    localStorage.removeItem(UPLOAD_WARNING_KEY);
+    localStorage.setItem(TOKEN_KEY, "test.jwt.token");
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      url: "/api/documents/upload",
+      json: async () => [
+        { id: 1, filename: "a.txt", original_filename: "a.txt", file_type: "txt", file_size: 1, content_length: 1, created_at: "2026-01-01T00:00:00Z" },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { pick, onUploaded } = renderUpload();
+    pick([new File(["hello"], "a.txt", { type: "text/plain" })]);
+
+    expect(screen.getByText("Перед загрузкой файла")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Хорошо"));
+
+    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(UPLOAD_WARNING_KEY)).toBe("1");
+  });
+
+  it("after confirming once, subsequent uploads skip the warning", async () => {
+    localStorage.setItem(UPLOAD_WARNING_KEY, "1");
+    localStorage.setItem(TOKEN_KEY, "test.jwt.token");
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      url: "/api/documents/upload",
+      json: async () => [
+        { id: 2, filename: "b.txt", original_filename: "b.txt", file_type: "txt", file_size: 1, content_length: 1, created_at: "2026-01-01T00:00:00Z" },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { pick, onUploaded } = renderUpload();
+    pick([new File(["hi"], "b.txt", { type: "text/plain" })]);
+
+    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Перед загрузкой файла")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

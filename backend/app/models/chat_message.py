@@ -1,13 +1,14 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
 
 if TYPE_CHECKING:
     from app.models.chat import Chat
+    from app.models.document import Document
     from app.models.user import User
 
 
@@ -23,12 +24,25 @@ class ChatMessage(Base):
     )
     role: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # When this message produced (or edited into) a file, links to it so the
+    # file card can be restored from the database after a page reload.
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    # Documents the user explicitly attached as context for this turn. Null when
+    # the message relied on normal RAG retrieval instead.
+    context_document_ids: Mapped[list[int] | None] = mapped_column(
+        JSON, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     chat: Mapped["Chat"] = relationship(back_populates="messages")
     user: Mapped["User"] = relationship(back_populates="chat_messages")
+    document: Mapped["Document | None"] = relationship(
+        back_populates="message", uselist=False
+    )
 
     def __repr__(self) -> str:
         return f"<ChatMessage id={self.id} chat_id={self.chat_id} role={self.role!r}>"

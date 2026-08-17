@@ -60,6 +60,14 @@ def compute_scores(query: str, texts: list[str]) -> list[float]:
     )
     if raw is None:
         raise RuntimeError("Reranker predict returned no scores")
-    if hasattr(raw, "tolist"):
-        raw = raw.tolist()
-    return [float(score) for score in raw]
+    # Predict can return shape (n, 1), (n,) or a nested list on different
+    # backends; flatten and require one score per text so a ragged output can
+    # never silently truncate the result set.
+    import numpy as np
+
+    arr = np.asarray(raw, dtype=float).ravel()
+    if len(arr) != len(texts):
+        raise RuntimeError(
+            f"Reranker returned {len(arr)} scores for {len(texts)} pairs"
+        )
+    return [float(score) for score in arr]

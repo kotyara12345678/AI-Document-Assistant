@@ -22,12 +22,11 @@ import uuid
 import zipfile
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services import gemini, retrieval
-from app.services.agent import SYSTEM_INSTRUCTION, agent_service
+from app.services.agent import SYSTEM_INSTRUCTION
 
 API_PREFIX = "/api"
 
@@ -605,14 +604,28 @@ def test_system_instruction_defaults_any_document_to_docx():
     assert "do not ask clarifying questions" in text
 
 
-def test_system_instruction_forbids_unsupported_formats():
-    """PDF and other non-docx/odt formats must never be passed to
-    create_document; the agent says the format is unsupported instead."""
+def test_system_instruction_supports_pdf_generation():
+    """PDF is a supported GENERATION format: create_document must be told to
+    accept 'pdf' (and md/txt) and to use them when the user asks for a
+    brand-new file in that format."""
     text = SYSTEM_INSTRUCTION.lower()
-    assert "unsupported format" in text
+    assert "create_document" in text
+    assert "supports 'docx', 'odt', 'pdf', 'md' and 'txt'" in text
+    assert "with output_format 'pdf'" in text
     assert "pdf" in text
-    assert "do not call create_document" in text
-    assert "docx or odt" in text
+
+
+def test_system_instruction_mandates_list_documents_for_listing():
+    """Listing/counting/naming files is document listing: the agent MUST call
+    list_documents first and treat its result as the only source of truth — not
+    chat memory or RAG hits."""
+    text = SYSTEM_INSTRUCTION.lower()
+    assert "list_documents" in text
+    assert "перечисли все мои файлы" in text
+    assert "only source of truth" in text
+    assert "enumerate every document" in text
+    assert "search_documents/rag results" in text
+    assert "exactly n" in text
 
 
 def test_system_instruction_distinguishes_answer_and_create():

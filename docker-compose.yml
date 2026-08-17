@@ -57,11 +57,19 @@ services:
   frontend:
     image: ghcr.io/kotyara12345678/ai-document-assistant-frontend
     build: ./frontend
+    command: npm run dev
+    working_dir: /app
+    environment:
+      # Enable file watching over the bind-mounted source on Windows hosts.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "5173:80"
+      - "5173:5173"
 
 volumes:
   postgres_data:

@@ -11,7 +11,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 from app.core.ratelimit import throttle
-from app.main import app
 
 API_PREFIX = "/api"
 PWD = "test-pass-123"

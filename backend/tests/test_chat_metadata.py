@@ -9,7 +9,6 @@ including retrieval narrowed to a named document.
 import re
 import uuid
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings

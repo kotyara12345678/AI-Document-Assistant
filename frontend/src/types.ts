@@ -5,6 +5,47 @@ export interface UserOut {
   created_at: string;
 }
 
+export type UserRole = "user" | "moderator" | "admin";
+
+export interface AdminUser {
+  id: number;
+  email: string;
+  role: UserRole;
+  created_at: string;
+  last_active_at: string | null;
+  is_active: boolean;
+  is_deleted: boolean;
+  reports_active: number;
+}
+
+export interface AdminUserList {
+  items: AdminUser[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export type AdminReportStatus = "pending" | "reviewed" | "rejected" | "action_taken";
+
+export interface AdminReport {
+  id: number;
+  reporter_email: string;
+  reported_user_id: number;
+  reason: string;
+  description: string | null;
+  status: AdminReportStatus;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by_email: string | null;
+}
+
+export interface AdminReportList {
+  items: AdminReport[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 export interface AuthResponse {
   access_token: string;
   token_type: string;
@@ -41,11 +82,33 @@ export interface ChatRequest {
   chat_id?: number | null;
   question: string;
   document_id?: number | null;
+  document_ids?: number[] | null;
+  context_document_ids?: number[] | null;
 }
 
 export interface AgentToolCall {
   name: string;
   arguments: Record<string, unknown>;
+}
+
+export interface AgentStep {
+  step_id: string;
+  tool: string;
+  message: string;
+  status: "running" | "completed" | "error";
+}
+
+export interface AgentEvent {
+  type: "agent_step" | "document_created" | "final";
+  step_id?: string;
+  status?: "running" | "completed" | "error";
+  tool?: string;
+  message?: string;
+  content?: string;
+  sources?: SourceRef[];
+  document_id?: number;
+  filename?: string;
+  download_url?: string;
 }
 
 export interface CreatedDocument {
@@ -75,6 +138,8 @@ export interface MessageOut {
   role: string;
   content: string;
   created_at: string;
+  document_id?: number | null;
+  context_document_ids?: number[] | null;
 }
 
 export interface SearchResultItem {

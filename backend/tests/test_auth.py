@@ -7,7 +7,6 @@ nobody reads somebody else's documents, chats, sources or search results.
 
 import uuid
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app

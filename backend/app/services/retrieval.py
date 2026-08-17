@@ -23,6 +23,11 @@ from app.vector.embeddings import embed_text
 
 logger = logging.getLogger("app.retrieval")
 
+# Process-lifetime worker pool reused by every ``retrieve_context`` call: the
+# two retrievers (semantic + keyword) run in parallel without spawning threads
+# per request.
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="retrieval")
+
 # Full-text search configuration used both for the GIN index expression and
 # for the tsquery/ts_rank calls (kept in sync with models/document_chunk.py).
 FTS_CONFIG = "russian"
@@ -68,21 +73,22 @@ def _semantic_search(
 
     chunks: list[RetrievedChunk] = []
     for result in results:
-        payload = result.get("payload")
+        payload = result.get("payload") or {}
         if not payload:
             continue
         score = result["score"]
+        text = payload.get("text") or ""
         chunks.append(
             RetrievedChunk(
                 source=SourceRef(
-                    document_id=payload.get("document_id", 0),
-                    filename=payload.get("original_filename", ""),
-                    chunk_index=payload.get("chunk_index", 0),
+                    document_id=payload.get("document_id") or 0,
+                    filename=payload.get("original_filename") or "",
+                    chunk_index=payload.get("chunk_index") or 0,
                     score=score,
-                    text=payload.get("text", "")[:1000],
+                    text=text[:1000],
                 ),
                 score=score,
-                text=payload.get("text", ""),
+                text=text,
             )
         )
     return chunks
@@ -144,7 +150,13 @@ def _keyword_search(
                 "    array_agg(lexeme) AS lexemes, count(*) AS total_lexemes "
                 "  FROM unnest(to_tsvector('" + FTS_CONFIG + "', :question))"
                 ") q "
-                f"WHERE d.user_id = :user_id AND {tsv} @@ q.query"
+                # The text branch EXACTLY matches the GIN index expression
+                # (to_tsvector('russian', dc.text)) so the planner can use the
+                # index instead of seq-scanning every chunk; the filename
+                # branch is an extra OR (files are far fewer than chunks).
+                "WHERE d.user_id = :user_id AND ("
+                "to_tsvector('" + FTS_CONFIG + "', dc.text) @@ q.query OR "
+                + tsv + " @@ q.query)"
             )
             params: dict = {"question": question, "user_id": user_id}
             if document_ids:
@@ -290,15 +302,14 @@ def retrieve_context(
     if rerank_enabled:
         candidate_k = max(top_k, settings.RERANKER_CANDIDATES)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        semantic_future = executor.submit(
-            _semantic_search, question, user_id, document_ids, candidate_k
-        )
-        keyword_future = executor.submit(
-            _keyword_search, question, user_id, document_ids, candidate_k
-        )
-        semantic_chunks = semantic_future.result()
-        keyword_rows = keyword_future.result()
+    semantic_future = _executor.submit(
+        _semantic_search, question, user_id, document_ids, candidate_k
+    )
+    keyword_future = _executor.submit(
+        _keyword_search, question, user_id, document_ids, candidate_k
+    )
+    semantic_chunks = semantic_future.result()
+    keyword_rows = keyword_future.result()
 
     merged = _merge_results(semantic_chunks, keyword_rows, candidate_k, min_score)
 

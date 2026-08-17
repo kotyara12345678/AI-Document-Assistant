@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api"
     DEBUG: bool = False
 
+    # Deployment environment. "production" enables extra safety checks (e.g.
+    # refusing to start with the default JWT_SECRET); anything else (the
+    # default "development") keeps the app usable for local runs and tests.
+    ENVIRONMENT: str = "development"
+
     # --- Database (PostgreSQL via SQLAlchemy) ---
     DATABASE_URL: str = "postgresql+psycopg2://docassistant:docassistant@db:5432/docassistant"
     DB_ECHO: bool = False
@@ -26,14 +31,21 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://qdrant:6333"
     QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION: str = "document_chunks"
+    # Per-request timeout (seconds) and automatic retry budget for Qdrant calls
+    # so a slow Qdrant does not stall every RAG turn indefinitely.
+    QDRANT_TIMEOUT: float = 10.0
+    QDRANT_RETRIES: int = 2
 
     # --- Embeddings ---
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     # Vector dimension is derived automatically from the model, not hardcoded.
 
     # --- Chunking ---
-    CHUNK_SIZE: int = 600
-    CHUNK_OVERLAP: int = 100
+    # Sized for all-MiniLM-L6-v2's 256-token context (≈180 words for RU/EN):
+    # a larger chunk would be silently truncated by the model on encode, so the
+    # tail of every chunk would never influence its vector.
+    CHUNK_SIZE: int = 180
+    CHUNK_OVERLAP: int = 30
 
     # --- File uploads ---
     UPLOAD_DIR: str = "/data/uploads"
@@ -72,6 +84,10 @@ class Settings(BaseSettings):
     GIGACHAT_TEMPERATURE: float = 0.2
     GIGACHAT_MAX_TOKENS: int = 2048
     GIGACHAT_TIMEOUT: float = 60.0
+    # Read timeout is deliberately larger than the connect/write timeout: large
+    # structured PDF-edit prompts make GigaChat take a long time to *produce*
+    # the answer, but the connection itself should still fail fast.
+    GIGACHAT_READ_TIMEOUT: float = 300.0
     # OAuth access token TTL: refresh every 30 minutes.
     GIGACHAT_TOKEN_TTL_SECONDS: int = 1800
     CHAT_TOP_K: int = 5

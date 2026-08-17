@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import type { DocumentOut } from "../types";
 import { uploadDocuments } from "../api";
+import { hasSeenUploadWarning, markUploadWarningSeen } from "../consent";
+import UploadWarning from "./UploadWarning";
 
 interface UploadDropzoneProps {
   onUploaded: (doc: DocumentOut) => void;
@@ -10,15 +12,14 @@ interface UploadDropzoneProps {
 export default function UploadDropzone({ onUploaded, onError }: UploadDropzoneProps) {
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [warningPending, setWarningPending] = useState<File[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const upload = useCallback(
-    async (files: FileList | null) => {
-      if (!files || files.length === 0) return;
-      const selected = Array.from(files);
+  const doUpload = useCallback(
+    async (files: File[]) => {
       setBusy(true);
       try {
-        const docs = await uploadDocuments(selected);
+        const docs = await uploadDocuments(files);
         docs.forEach((doc) => onUploaded(doc));
       } catch (err) {
         onError(err instanceof Error ? err.message : "Не удалось загрузить файл");
@@ -28,6 +29,26 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
     },
     [onUploaded, onError]
   );
+
+  const upload = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      const selected = Array.from(files);
+      if (hasSeenUploadWarning()) {
+        await doUpload(selected);
+      } else {
+        setWarningPending(selected);
+      }
+    },
+    [doUpload]
+  );
+
+  const confirmWarning = useCallback(() => {
+    markUploadWarningSeen();
+    const pending = warningPending;
+    setWarningPending(null);
+    if (pending) void doUpload(pending);
+  }, [warningPending, doUpload]);
 
   return (
     <div
@@ -62,6 +83,13 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
       <div className="dropzone__hint">
         PDF, TXT, DOCX, Markdown или ODT — несколько файлов за раз или нажмите для выбора
       </div>
+
+      {warningPending && (
+        <UploadWarning
+          onConfirm={confirmWarning}
+          onClose={() => setWarningPending(null)}
+        />
+      )}
     </div>
   );
 }

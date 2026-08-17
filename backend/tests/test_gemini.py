@@ -10,9 +10,11 @@ KEY = "test-key"
 
 
 class _FakeResponse:
-    def __init__(self, data, status_code=200):
+    def __init__(self, data, status_code=200, text=""):
         self._data = data
         self.status_code = status_code
+        self.text = text
+        self.url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -203,3 +205,140 @@ def test_chat_with_functions_wraps_errors(monkeypatch):
     fake = _FakeClient(error=RuntimeError("boom"))
     with pytest.raises(GeminiError, match="boom"):
         chat_with_functions([{"role": "user", "content": "hi"}], client=fake)
+
+
+class _FlakyClient:
+    """A client that raises the queued errors on successive ``post`` calls,
+    then returns a successful response once the queue is drained."""
+
+    def __init__(self, data, errors, status_code=200):
+        self._data = data
+        self._errors = list(errors)
+        self._status_code = status_code
+        self.call_count = 0
+        self.last_kwargs = None
+
+    def post(self, url, headers=None, json=None):
+        self.call_count += 1
+        self.last_kwargs = {"url": url, "headers": headers, "json": json}
+        if self._errors:
+            raise self._errors.pop(0)
+        return _FakeResponse(self._data, status_code=self._status_code)
+
+
+def test_read_timeout_is_retried_then_succeeds(monkeypatch):
+    """One transient ReadTimeout must trigger exactly one retry and still return."""
+    import httpx
+
+    _patch_settings(monkeypatch)
+    flaky = _FlakyClient(
+        data={"choices": [{"message": {"content": "ok"}}]},
+        errors=[httpx.ReadTimeout("timed out")],
+    )
+    assert generate_answer("q", client=flaky) == "ok"
+    assert flaky.call_count == 2  # initial attempt + one retry
+
+
+def test_read_timeout_retry_exhausted_raises_geminierror(monkeypatch):
+    """After the single retry is exhausted the original error surfaces as GeminiError."""
+    import httpx
+
+    _patch_settings(monkeypatch)
+    flaky = _FlakyClient(
+        data={"choices": [{"message": {"content": "ok"}}]},
+        errors=[httpx.ReadTimeout("t1"), httpx.ReadTimeout("t2")],
+    )
+    with pytest.raises(GeminiError) as excinfo:
+        generate_answer("q", client=flaky)
+    # Exactly one retry: two attempts total, never more.
+    assert flaky.call_count == 2
+    assert "GigaChat request failed" in str(excinfo.value)
+
+
+def test_http_status_error_is_not_retried(monkeypatch):
+    """4xx/5xx are permanent: they must NOT be retried (one attempt only)."""
+    _patch_settings(monkeypatch)
+    flaky = _FlakyClient(data={}, status_code=429, errors=[])
+    with pytest.raises(GeminiError, match="GigaChat request failed"):
+        generate_answer("q", client=flaky)
+    assert flaky.call_count == 1
+
+
+def test_connect_error_is_retried_then_succeeds(monkeypatch):
+    import httpx
+
+    _patch_settings(monkeypatch)
+    flaky = _FlakyClient(
+        data={"choices": [{"message": {"content": "ok"}}]},
+        errors=[httpx.ConnectError("conn refused")],
+    )
+    assert generate_answer("q", client=flaky) == "ok"
+    assert flaky.call_count == 2
+
+
+def test_chat_with_functions_http_422_logs_body_and_no_secrets(monkeypatch):
+    """HTTP 422 from GigaChat must:
+
+    - log the response body (so we can see the real rejection reason),
+    - never leak secrets (client secret / Bearer token) into the log,
+    - still raise GeminiError (graceful fallback must keep working).
+    """
+    import app.services.gemini as gemini_mod
+
+    _patch_settings(monkeypatch)
+    error_body = (
+        '{"code":422,"message":"Invalid parameter: '
+        'functions[0].parameters must be an object schema"}'
+    )
+
+    class _FakeResp:
+        status_code = 422
+        text = error_body
+        url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+
+        def raise_for_status(self):
+            import httpx
+
+            raise httpx.HTTPStatusError("422", request=None, response=self)
+
+        def json(self):
+            return {}
+
+    class _FakeCli:
+        last_kwargs = None
+
+        def post(self, url, headers=None, json=None):
+            self.last_kwargs = {"url": url, "headers": headers, "json": json}
+            return _FakeResp()
+
+    captured: list[str] = []
+
+    def _spy_error(*args, **kwargs):
+        # Reconstruct the message exactly as logging would.
+        if args:
+            msg = args[0] % args[1:] if len(args) > 1 else args[0]
+        else:
+            msg = kwargs.get("msg", "")
+        captured.append(str(msg))
+
+    monkeypatch.setattr(gemini_mod.logger, "error", _spy_error)
+
+    cli = _FakeCli()
+    with pytest.raises(GeminiError) as excinfo:
+        chat_with_functions(
+            [{"role": "user", "content": "hi"}],
+            functions=[{"name": "search_documents", "parameters": {}}],
+            client=cli,
+        )
+
+    log_text = "\n".join(captured)
+    # The real error body reaches the log for diagnosis.
+    assert error_body in log_text
+    # No secrets leak: the configured client secret and Bearer token are absent.
+    assert "client-secret" not in log_text
+    assert "Bearer" not in log_text
+    # Original failure is preserved as a GeminiError (not masked/swallowed).
+    assert isinstance(excinfo.value, GeminiError)
+    assert "422" in str(excinfo.value)
+    # Sanity: the actual request still carried the auth header (not logged).
+    assert cli.last_kwargs["headers"]["Authorization"] == f"Bearer {KEY}"

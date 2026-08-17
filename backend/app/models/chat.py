@@ -8,6 +8,7 @@ from app.database.base import Base
 
 if TYPE_CHECKING:
     from app.models.chat_message import ChatMessage, ChatSummary
+    from app.models.document import Document
     from app.models.user import User
 
 
@@ -35,6 +36,8 @@ class Chat(Base):
     summary: Mapped["ChatSummary | None"] = relationship(
         back_populates="chat", cascade="all, delete-orphan", uselist=False
     )
+    # Generated/edited documents attached to this chat (informational link).
+    documents: Mapped[list["Document"]] = relationship(back_populates="chat")
 
     def __repr__(self) -> str:
         return f"<Chat id={self.id} user_id={self.user_id} title={self.title!r}>"

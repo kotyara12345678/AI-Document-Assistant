@@ -1,13 +1,21 @@
 import type {
+  AdminReportList,
   AdminStats,
+  AdminUser,
+  AdminUserList,
+  AgentEvent,
+  AgentStep,
   AuthResponse,
   ChatOut,
   ChatRequest,
   ChatResponse,
+  CreatedDocument,
   DocumentContent,
   DocumentOut,
   MessageOut,
+  SourceRef,
   UserOut,
+  UserRole,
 } from "./types";
 
 const BASE = "/api";
@@ -112,6 +120,74 @@ export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   return handle<ChatResponse>(res);
 }
 
+export interface StreamHandlers {
+  onStep?: (step: AgentStep) => void;
+  onDocumentCreated?: (doc: CreatedDocument & { download_url?: string }) => void;
+  onFinal?: (content: string, sources?: SourceRef[]) => void;
+  onError?: (message: string) => void;
+}
+
+/** Realtime agent run: POST /api/agent/stream, parsed as SSE frames. */
+export async function streamAgent(req: ChatRequest, handlers: StreamHandlers): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/agent/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(req),
+    });
+  } catch (err) {
+    handlers.onError?.(err instanceof Error ? err.message : "Сбой сети");
+    return;
+  }
+  if (!res.ok || !res.body) {
+    let detail = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
+    try {
+      const body = await res.json();
+      if (body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch {
+      /* keep default */
+    }
+    handlers.onError?.(detail);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      const json = dataLine.slice(5).trim();
+      if (!json) continue;
+      try {
+        const evt = JSON.parse(json) as AgentEvent;
+        if (evt.type === "agent_step" && evt.step_id) {
+          handlers.onStep?.(evt as AgentStep);
+        } else if (evt.type === "document_created") {
+          handlers.onDocumentCreated?.({
+            document_id: evt.document_id ?? 0,
+            filename: evt.filename ?? "",
+            file_type: evt.filename ? evt.filename.split(".").pop() ?? "" : "",
+            download_url: evt.download_url,
+          });
+        } else if (evt.type === "final") {
+          handlers.onFinal?.(evt.content ?? "", evt.sources);
+        }
+      } catch {
+        /* ignore malformed frame */
+      }
+    }
+  }
+}
+
 export async function downloadDocument(id: number, filename: string): Promise<void> {
   const res = await fetch(`${BASE}/documents/${id}/file`, { headers: authHeaders() });
   if (!res.ok) {
@@ -155,6 +231,59 @@ export async function fetchChatMessages(id: number): Promise<MessageOut[]> {
 export async function fetchAdminStats(): Promise<AdminStats> {
   const res = await fetch(`${BASE}/admin/stats`, { headers: authHeaders() });
   return handle<AdminStats>(res);
+}
+
+export interface AdminUsersParams {
+  page: number;
+  limit: number;
+  search?: string;
+}
+
+export async function fetchAdminUsers(params: AdminUsersParams): Promise<AdminUserList> {
+  const qs = new URLSearchParams({ page: String(params.page), limit: String(params.limit) });
+  if (params.search) qs.set("search", params.search);
+  const res = await fetch(`${BASE}/admin/users?${qs.toString()}`, { headers: authHeaders() });
+  return handle<AdminUserList>(res);
+}
+
+export async function fetchAdminUser(id: number): Promise<AdminUser> {
+  const res = await fetch(`${BASE}/admin/users/${id}`, { headers: authHeaders() });
+  return handle<AdminUser>(res);
+}
+
+export async function patchAdminUserRole(id: number, role: UserRole): Promise<AdminUser> {
+  const res = await fetch(`${BASE}/admin/users/${id}/role`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ role }),
+  });
+  return handle<AdminUser>(res);
+}
+
+export async function patchAdminUserStatus(id: number, isActive: boolean): Promise<AdminUser> {
+  const res = await fetch(`${BASE}/admin/users/${id}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ is_active: isActive }),
+  });
+  return handle<AdminUser>(res);
+}
+
+export async function deleteAdminUser(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/admin/users/${id}`, { method: "DELETE", headers: authHeaders() });
+  await handle<{ deleted: boolean; user_id: number }>(res);
+}
+
+export async function fetchAdminUserReports(
+  id: number,
+  page: number,
+  limit: number,
+): Promise<AdminReportList> {
+  const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
+  const res = await fetch(`${BASE}/admin/users/${id}/reports?${qs.toString()}`, {
+    headers: authHeaders(),
+  });
+  return handle<AdminReportList>(res);
 }
 
 export function documentFileUrl(id: number): string {

@@ -1,5 +1,8 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.ratelimit import (
@@ -69,7 +72,17 @@ def register(
         password_hash=hash_password(payload.password),
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two concurrent registers with the same email race past the SELECT
+        # above; the unique index is the final arbiter. Report the same 409 so
+        # callers see one consistent error.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email is already registered",
+        ) from None
     db.refresh(user)
     return _auth_response(user)
 
@@ -100,6 +113,16 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
+    if user.is_deleted or not user.is_active:
+        # Credentials are correct but the account was blocked / soft-deleted.
+        # Resolving this only after a successful password check avoids letting
+        # unauthenticated callers probe which accounts are moderated.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive or deleted",
+        )
+    user.last_active_at = datetime.now(timezone.utc)
+    db.commit()
     return _auth_response(user)
 
 

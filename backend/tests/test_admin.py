@@ -13,7 +13,6 @@ token; admins are created by flipping the role directly in the database.
 
 import uuid
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.database.session import SessionLocal

@@ -25,6 +25,29 @@ from app.core.config import settings
 
 logger = logging.getLogger("app.gemini")
 
+# Transient transport/network failures worth a single retry. Permanent failures
+# (HTTP status errors, auth, bad JSON) are NOT in this set and propagate as-is.
+_RETRYABLE_EXCEPTIONS = (
+    httpx.TimeoutException,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.TransportError,
+)
+# Exactly one retry (two attempts total) with a short backoff. We never loop
+# forever: a persistently failing upstream must surface as a GeminiError.
+_RETRY_MAX_ATTEMPTS = 1
+_RETRY_BACKOFF_SECONDS = 2.0
+
+# Process-wide HTTP client (created once, reused by every LLM call). Building a
+# new httpx.Client per request would open a fresh connection pool (TCP/TLS
+# handshake) each time and leak it once the request ends. httpx.Client is
+# thread-safe, so a single keep-alive pool serves concurrent request workers.
+_client_lock = threading.Lock()
+_client: httpx.Client | None = None
+
 # In-memory token cache: {"token": str, "issued_at": float (unix ts), ...}
 _token_lock = threading.Lock()
 _token: str | None = None
@@ -119,7 +142,72 @@ def _basic_auth_header() -> str:
 
 
 def _create_client() -> httpx.Client:
-    return httpx.Client(timeout=settings.GIGACHAT_TIMEOUT)
+    # Keep connect/write/pool timeouts tight; only the *read* timeout is large,
+    # because large edit prompts make GigaChat slow to return the answer.
+    return httpx.Client(
+        timeout=httpx.Timeout(
+            connect=settings.GIGACHAT_TIMEOUT,
+            read=settings.GIGACHAT_READ_TIMEOUT,
+            write=settings.GIGACHAT_TIMEOUT,
+            pool=settings.GIGACHAT_TIMEOUT,
+        )
+    )
+
+
+def _get_shared_client() -> httpx.Client:
+    """Return the process-wide HTTP client, creating it lazily on first call.
+
+    Callers that pass an explicit ``client`` (tests, shared call chains) keep
+    using it untouched; only the default path reuses the pooled client.
+    """
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = _create_client()
+    return _client
+
+
+def _post_json(
+    client: httpx.Client,
+    url: str,
+    headers: dict,
+    json: dict,
+    label: str = "chat",
+) -> "httpx.Response":
+    """POST JSON with exactly one retry on transient network/timeout errors.
+
+    Non-retryable errors (HTTP status, auth, parse) raise immediately. After the
+    single retry is exhausted the original exception is re-raised so the caller
+    can wrap it as a GeminiError. The response is checked for HTTP errors before
+    returning, so callers can rely on a 2xx response.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_RETRY_MAX_ATTEMPTS + 1):
+        try:
+            response = client.post(url, headers=headers, json=json)
+            response.raise_for_status()
+            return response
+        except _RETRYABLE_EXCEPTIONS as exc:
+            last_exc = exc
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                logger.warning(
+                    "GigaChat %s request failed (attempt %s/%s, %s: %s); "
+                    "retrying in %.1fs",
+                    label,
+                    attempt + 1,
+                    _RETRY_MAX_ATTEMPTS + 1,
+                    type(exc).__name__,
+                    exc,
+                    _RETRY_BACKOFF_SECONDS,
+                )
+                time.sleep(_RETRY_BACKOFF_SECONDS)
+                continue
+            raise
+    # Should be unreachable (the loop always raises on the last attempt), but
+    # keep mypy honest.
+    assert last_exc is not None
+    raise last_exc
 
 
 def _fetch_access_token(client: httpx.Client) -> str:
@@ -186,6 +274,8 @@ def chat_completion(
     messages: list[dict],
     client=None,
     tools: list[dict] | None = None,
+    max_tokens: int | None = None,
+    response_format: dict | None = None,
 ) -> dict:
     """Send an OpenAI-compatible chat completion and return the assistant message.
 
@@ -194,22 +284,30 @@ def chat_completion(
     message may carry a ``tool_calls`` array that the caller must execute and
     feed back as ``role: "tool"`` messages.
 
+    ``max_tokens`` overrides ``settings.GIGACHAT_MAX_TOKENS`` (used by callers
+    that need a larger answer, e.g. batch document editing). ``response_format``
+    requests structured output (e.g. ``{"type": "json_object"}``); it is ignored
+    by GigaChat versions that do not honour it, and callers still parse robustly.
+
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
-    client = client or _create_client()
+    client = client or _get_shared_client()
     token = _get_access_token(client)
 
     payload: dict = {
         "model": settings.GIGACHAT_MODEL,
         "temperature": settings.GIGACHAT_TEMPERATURE,
-        "max_tokens": settings.GIGACHAT_MAX_TOKENS,
+        "max_tokens": max_tokens if max_tokens is not None else settings.GIGACHAT_MAX_TOKENS,
         "messages": messages,
     }
     if tools:
         payload["tools"] = tools
+    if response_format is not None:
+        payload["response_format"] = response_format
 
     try:
-        response = client.post(
+        response = _post_json(
+            client,
             _chat_url(),
             headers={
                 "Authorization": f"Bearer {token}",
@@ -217,8 +315,8 @@ def chat_completion(
                 "Accept": "application/json",
             },
             json=payload,
+            label="chat",
         )
-        response.raise_for_status()
         data = response.json()
     except Exception as exc:
         logger.exception("GigaChat request failed")
@@ -228,6 +326,67 @@ def chat_completion(
         return data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise GeminiError("GigaChat returned an empty response") from exc
+
+
+def _safe_body(response) -> str:
+    """Response body text, truncated and safe to log (it carries no secrets)."""
+    try:
+        body = response.text or ""
+    except Exception:
+        return "<unreadable response body>"
+    if len(body) > 4000:
+        body = body[:4000] + "...[truncated]"
+    return body
+
+
+def _safe_payload_summary(payload: dict) -> dict:
+    """Secret-free diagnostic summary of a request payload.
+
+    Only shape/metadata is recorded. Tokens, keys and secrets live solely in
+    request headers and are never part of the JSON payload, so even a full
+    payload dump would expose no secrets -- but we keep the summary minimal.
+    """
+    messages = payload.get("messages") or []
+    summary: dict = {
+        "model": payload.get("model"),
+        "temperature": payload.get("temperature"),
+        "max_tokens": payload.get("max_tokens"),
+        "message_count": len(messages),
+        "message_roles": [m.get("role") for m in messages],
+    }
+    if payload.get("functions") is not None:
+        summary["functions"] = [f.get("name") for f in payload["functions"]]
+    if "function_call" in payload:
+        summary["function_call"] = payload["function_call"]
+    if "functions_state_id" in payload:
+        summary["functions_state_id"] = "<set>"
+    if payload.get("tools") is not None:
+        summary["tools"] = [
+            (t.get("function") or {}).get("name") for t in payload["tools"]
+        ]
+    if "response_format" in payload:
+        summary["response_format"] = payload["response_format"]
+    return summary
+
+
+def _log_gigachat_error(response, payload: dict, fallback_url: str) -> None:
+    """Log a GigaChat HTTP error: status, response body, and a safe request summary.
+
+    Never logs Authorization / Bearer token / API key / client secret / JWT.
+    Those are only in request headers, which are intentionally not captured.
+    """
+    status = getattr(response, "status_code", "unknown")
+    try:
+        url = str(response.url)
+    except Exception:
+        url = fallback_url
+    logger.error(
+        "GigaChat HTTP %s on %s. Request summary: %s. Response body: %s",
+        status,
+        url,
+        _safe_payload_summary(payload),
+        _safe_body(response),
+    )
 
 
 def chat_with_functions(
@@ -253,7 +412,7 @@ def chat_with_functions(
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
-    client = client or _create_client()
+    client = client or _get_shared_client()
     token = _get_access_token(client)
 
     payload: dict = {
@@ -269,7 +428,8 @@ def chat_with_functions(
         payload["functions_state_id"] = functions_state_id
 
     try:
-        response = client.post(
+        response = _post_json(
+            client,
             _chat_url(),
             headers={
                 "Authorization": f"Bearer {token}",
@@ -277,9 +437,16 @@ def chat_with_functions(
                 "Accept": "application/json",
             },
             json=payload,
+            label="functions",
         )
-        response.raise_for_status()
         data = response.json()
+    except httpx.HTTPStatusError as exc:
+        # Surface the real GigaChat error (status + body) without masking it,
+        # and never log secrets (token/key live in headers only).
+        _log_gigachat_error(exc.response, payload, _chat_url())
+        raise GeminiError(
+            f"GigaChat HTTP {exc.response.status_code}: {_safe_body(exc.response)[:500]}"
+        ) from exc
     except Exception as exc:
         logger.exception("GigaChat request failed")
         raise GeminiError(f"GigaChat request failed: {exc}") from exc
@@ -299,17 +466,25 @@ def generate_answer(
     client=None,
     history: list[dict[str, str]] | None = None,
     summary: str | None = None,
+    max_tokens: int | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """Send a prompt to GigaChat and return the text answer.
 
     `history` carries the most recent turns as [{"role", "content"}] messages
     and `summary` is a compact rollup of older turns; together they provide
-    conversational context without sending the full history.
+    conversational context without sending the full history. `max_tokens` and
+    `response_format` are forwarded to the underlying completion call.
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
     messages = _build_messages(prompt, system_instruction, history, summary)
-    message = chat_completion(messages, client=client)
+    message = chat_completion(
+        messages,
+        client=client,
+        max_tokens=max_tokens,
+        response_format=response_format,
+    )
     answer = message.get("content")
     if not answer:
         raise GeminiError("GigaChat returned an empty response")

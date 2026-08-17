@@ -13,6 +13,14 @@ class ChatRequest(BaseModel):
         default=None,
         description="Limit the answer to several documents at once. Takes precedence over document_id.",
     )
+    context_document_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Documents the user explicitly attached as context for this turn "
+            "(e.g. by double-clicking them in the UI). Takes precedence over "
+            "document_ids/document_id and over RAG retrieval."
+        ),
+    )
     question: str = Field(min_length=1, max_length=2000)
 
 
@@ -51,3 +59,8 @@ class MessageOut(BaseModel):
     role: str
     content: str
     created_at: datetime
+    # Links the message to a file it produced/edited so the file card can be
+    # restored from the database after a page reload (never stored in JS state).
+    document_id: int | None = None
+    # Documents explicitly attached as context for this turn (UI chips).
+    context_document_ids: list[int] | None = None

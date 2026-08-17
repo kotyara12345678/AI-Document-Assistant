@@ -21,8 +21,8 @@ def chunk_text(
     chunk_size: int | None = None,
     overlap: int | None = None,
 ) -> list[Chunk]:
-    chunk_size = chunk_size or settings.CHUNK_SIZE
-    overlap = overlap or settings.CHUNK_OVERLAP
+    chunk_size = chunk_size if chunk_size is not None else settings.CHUNK_SIZE
+    overlap = overlap if overlap is not None else settings.CHUNK_OVERLAP
 
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
