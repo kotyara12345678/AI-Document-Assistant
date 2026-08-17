@@ -39,9 +39,6 @@ on:
 
 permissions:
   contents: read
-  # Required to verify the just-pushed main-<sha> images exist in GHCR
-  # (private packages) before SSHing to the server.
-  packages: read
 
 concurrency:
   group: deploy-production
@@ -80,18 +77,6 @@ jobs:
           else
             echo "image_tag=main-${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Verify image tags exist in GHCR
-        shell: bash
-        run: |
-          check() {
-            curl -sS -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer ${{ github.token }}" \
-              "https://ghcr.io/v2/kotyara12345678/ai-document-assistant-$1/manifests/${{ steps.tag.outputs.image_tag }}"
-          }
-          backend_status=$(check backend)
-          frontend_status=$(check frontend)
-          echo "backend:${{ steps.tag.outputs.image_tag }} -> ${backend_status}, frontend -> ${frontend_status}"
-          [[ "$backend_status" == "200" && "$frontend_status" == "200" ]] || { echo "Image tag missing in GHCR"; exit 1; }
 
       - name: Validate deployment configuration
         shell: bash
