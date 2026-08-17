@@ -147,7 +147,9 @@ jobs:
         run: |
           ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
             -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-          scp_cmd=(scp "${ssh_opts[@]}")
+          scp_opts=(-i "${SSH_KEY_PATH}" -P "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          scp_cmd=(scp "${scp_opts[@]}")
           ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
             "mkdir -p '${{ env.DEPLOY_APP_DIR }}/backend' '${{ env.DEPLOY_APP_DIR }}/scripts'"
           "${scp_cmd[@]}" scripts/deploy/deploy.sh \
