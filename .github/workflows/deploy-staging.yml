@@ -193,11 +193,13 @@ jobs:
         run: |
           ssh_opts=(-i "${SSH_KEY_PATH}" -p "${{ env.SSH_PORT }}"
             -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          scp_opts=(-i "${SSH_KEY_PATH}" -P "${{ env.SSH_PORT }}"
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
           ssh "${ssh_opts[@]}" "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}" \
             "cd '${{ env.DEPLOY_APP_DIR }}'
              docker compose -p ada-staging -f docker-compose.staging.yml logs --no-color \
              > deploy-logs.txt 2>&1 || true" || true
-          scp "${ssh_opts[@]}" \
+          scp "${scp_opts[@]}" \
             "${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:${{ env.DEPLOY_APP_DIR }}/deploy-logs.txt" \
             ./deploy-logs.txt || true
 
