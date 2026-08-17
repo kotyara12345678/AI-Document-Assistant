@@ -102,7 +102,7 @@ jobs:
           install -d -m 700 "$(dirname "${SSH_KEY_PATH}")"
           printf '%s\n' "${KEY}" > "${SSH_KEY_PATH}"
           chmod 600 "${SSH_KEY_PATH}"
-          echo "ssh_key_path=${SSH_KEY_PATH}" >> "${GITHUB_ENV}"
+          echo "SSH_KEY_PATH=${SSH_KEY_PATH}" >> "${GITHUB_ENV}"
 
       - name: Wait for SSH connectivity
         shell: bash
