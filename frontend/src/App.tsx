@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { AgentStep, ChatOut, CreatedDocument, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
 import {
   createChat,
@@ -91,6 +91,8 @@ export default function App() {
   const [viewerHighlights, setViewerHighlights] = useState<string[]>([]);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  // Mobile-only drawer (left panel becomes a tab opened via the top-right button).
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   // Documents the user has pinned as context for the next message (UI chips).
   const [contextDocs, setContextDocs] = useState<number[]>([]);
   // Files awaiting confirmation of the first-upload warning.
@@ -100,6 +102,9 @@ export default function App() {
   const composerFileRef = useRef<HTMLInputElement | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const showScrollBottomRef = useRef(false);
+  const stickToBottomRef = useRef(true);
+  const prevMessagesLenRef = useRef(0);
 
   const flashNotice = useCallback((msg: string) => {
     setNotice(msg);
@@ -110,10 +115,15 @@ export default function App() {
   const handleMessagesScroll = useCallback(() => {
     const el = messagesRef.current;
     if (!el) return;
-    setShowScrollBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 150);
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    stickToBottomRef.current = nearBottom;
+    if (showScrollBottomRef.current === nearBottom) return;
+    showScrollBottomRef.current = nearBottom;
+    setShowScrollBottom(!nearBottom);
   }, []);
 
   const scrollMessagesToBottom = useCallback(() => {
+    stickToBottomRef.current = true;
     const el = messagesRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
@@ -159,6 +169,28 @@ export default function App() {
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
 
+  // Keep the view pinned to the bottom while streaming new messages,
+  // unless the user has scrolled up to read history.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const grew = messages.length > prevMessagesLenRef.current;
+    prevMessagesLenRef.current = messages.length;
+    if (grew && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages]);
+
+  // Close the mobile drawer with Escape.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
+
   const loadDocuments = useCallback(async () => {
     try {
       setDocuments(await fetchDocuments());
@@ -179,6 +211,7 @@ export default function App() {
 
   const selectChat = useCallback(
     async (chatId: number) => {
+      setSidebarOpen(false);
       setActiveChatId(chatId);
       localStorage.setItem("docsearch-active-chat", String(chatId));
       setMessages([]);
@@ -250,6 +283,7 @@ export default function App() {
   }, [loadDocuments, user]);
 
   const newChat = useCallback(async () => {
+    setSidebarOpen(false);
     try {
       const chat = await createChat();
       setChats((prev) => [chat, ...prev]);
@@ -285,6 +319,9 @@ export default function App() {
   );
 
   const openDocument = useCallback(async (id: number, highlights: string[] = []) => {
+    setSidebarOpen(false);
+    // Document preview is desktop-only for now (mobile shows the file list only).
+    if (window.matchMedia("(max-width: 900px)").matches) return;
     setViewerLoading(true);
     setViewerHighlights(highlights);
     try {
@@ -496,10 +533,18 @@ export default function App() {
 
   return (
     <div className="layout">
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? "sidebar--open" : ""}`}>
         <div className="sidebar__header">
           <span className="sidebar__brand">ADA</span>
           <div className="sidebar__actions">
+            <button
+              className="sidebar__close-btn"
+              onClick={() => setSidebarOpen(false)}
+              title="Закрыть меню"
+              aria-label="Закрыть меню"
+            >
+              ✕
+            </button>
             <button
               className="theme-toggle"
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -527,7 +572,7 @@ export default function App() {
 
         {user.role === "admin" && (
           <div className="sidebar__section">
-            <button className="btn--admin" onClick={() => setShowAdmin((v) => !v)}>
+            <button className="btn--admin" onClick={() => { setSidebarOpen(false); setShowAdmin((v) => !v); }}>
               {showAdmin ? "◀ К чату" : "⚙ Админ-панель"}
             </button>
           </div>
@@ -615,17 +660,38 @@ export default function App() {
         </div>
       </aside>
 
+      <div
+        className={`sidebar-backdrop ${sidebarOpen ? "sidebar-backdrop--visible" : ""}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-hidden="true"
+      />
+
       {showAdmin ? (
         <AdminPanel onBack={() => setShowAdmin(false)} currentUserId={user.id} />
       ) : (
         <main className="chat">
           <div className="chat__header">
-            <div className="chat__header-title">
-              {chats.find((c) => c.id === activeChatId)?.title ?? "Спросите о документах"}
+            <div className="chat__header-main">
+              <div className="chat__header-title">
+                {chats.find((c) => c.id === activeChatId)?.title ?? "Спросите о документах"}
+              </div>
+              <div className="chat__header-sub">
+                Поиск по {documents.length} {plural(documents.length, "документу", "документам", "документам")}
+              </div>
             </div>
-            <div className="chat__header-sub">
-              Поиск по {documents.length} {plural(documents.length, "документу", "документам", "документам")}
-            </div>
+            <button
+              type="button"
+              className="chat__menu-btn"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Открыть меню"
+              title="Меню"
+            >
+              <span className="chat__menu-icon" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+            </button>
           </div>
 
           <div className="chat__scroll">
@@ -645,95 +711,7 @@ export default function App() {
               </div>
             ) : (
               messages.map((m) => (
-                <div key={m.id} className={`msg msg--${m.role}`}>
-                  <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>
-                    {extractCodeBlock(m.text) ? <CopyableBlock result={extractCodeBlock(m.text)!} /> : m.text}
-                  </div>
-                  {m.role === "user" && m.contextDocumentIds && m.contextDocumentIds.length > 0 && (
-                    <div className="msg__context-chips">
-                      {m.contextDocumentIds.map((id) => (
-                        <span className="context-chip context-chip--readonly" key={id}>
-                          {documents.find((d) => d.id === id)?.original_filename ?? `Документ ${id}`}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {m.role === "assistant" && m.agentSteps && m.agentSteps.length > 0 && (
-                    <div className="agent-steps">
-                      <div className="agent-steps__title">Шаги нейросети</div>
-                      {m.agentSteps.map((s) => (
-                        <div className="agent-steps__item" key={s.step_id}>
-                          <span className="agent-steps__icon">
-                            {s.status === "running" ? "⏳" : s.status === "error" ? "✗" : "✓"}
-                          </span>
-                          {s.message}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {m.role === "assistant" &&
-                    (() => {
-                      // Live-created docs (from the stream) plus any file this
-                      // message produced earlier and restored from the backend
-                      // on reload — so the card survives F5 / reopening the chat.
-                      const restored = m.documentId
-                        ? documents.find((d) => d.id === m.documentId)
-                        : undefined;
-                      const createdDocs = [...(m.createdDocuments || [])];
-                      if (
-                        restored &&
-                        !createdDocs.some((d) => d.document_id === restored.id)
-                      ) {
-                        createdDocs.push({
-                          document_id: restored.id,
-                          filename: restored.original_filename,
-                          file_type: restored.file_type,
-                        });
-                      }
-                      if (createdDocs.length === 0) return null;
-                      return (
-                        <div className="created-docs">
-                          <div className="created-docs__title">Созданные документы</div>
-                          {createdDocs.map((d) => (
-                            <div className="created-doc" key={d.document_id}>
-                              <span className="created-doc__icon">{fileIcon(d.file_type)}</span>
-                              <span className="created-doc__name" title={d.filename}>
-                                {d.filename}
-                              </span>
-                              <button
-                                type="button"
-                                className="created-doc__btn"
-                                onClick={() => void downloadDocument(d.document_id, d.filename)}
-                              >
-                                Скачать
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                  {m.sources && m.sources.length > 0 && (
-                    <div className="sources">
-                      <div className="sources__title">
-                        Источники · {m.sources.length}{" "}
-                        {plural(m.sources.length, "совпадение", "совпадения", "совпадений")} — нажмите, чтобы открыть
-                      </div>
-                      {m.sources.slice(0, 3).map((s, i) => (
-                        <button key={i} className="source" onClick={() => openSource(s)}>
-                          <div className="source__head">
-                            <span className="source__title">
-                              <span className="source__title-icon">{fileIcon(extOf(s.filename))}</span>
-                              <span className="source__title-text">{s.filename}</span>
-                            </span>
-                            <span className="source__score">{(s.score * 100).toFixed(0)}%</span>
-                          </div>
-                          <div className="source__meta">Фрагмент {s.chunk_index}</div>
-                          <div className="source__chunk">{s.text}</div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <MessageItem key={m.id} m={m} documents={documents} onOpenSource={openSource} />
               ))
             )}
             {loading && (
@@ -874,3 +852,100 @@ function extOf(filename: string): string {
   if (dot < 0) return "";
   return filename.slice(dot + 1).toLowerCase();
 }
+
+const MessageItem = memo(function MessageItem({
+  m,
+  documents,
+  onOpenSource,
+}: {
+  m: Message;
+  documents: DocumentOut[];
+  onOpenSource: (s: SourceRef) => void;
+}) {
+  return (
+    <div className={`msg msg--${m.role}`}>
+      <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>
+        {extractCodeBlock(m.text) ? <CopyableBlock result={extractCodeBlock(m.text)!} /> : m.text}
+      </div>
+      {m.role === "user" && m.contextDocumentIds && m.contextDocumentIds.length > 0 && (
+        <div className="msg__context-chips">
+          {m.contextDocumentIds.map((id) => (
+            <span className="context-chip context-chip--readonly" key={id}>
+              {documents.find((d) => d.id === id)?.original_filename ?? `Документ ${id}`}
+            </span>
+          ))}
+        </div>
+      )}
+      {m.role === "assistant" && m.agentSteps && m.agentSteps.length > 0 && (
+        <div className="agent-steps">
+          <div className="agent-steps__title">Шаги нейросети</div>
+          {m.agentSteps.map((s) => (
+            <div className="agent-steps__item" key={s.step_id}>
+              <span className="agent-steps__icon">
+                {s.status === "running" ? "⏳" : s.status === "error" ? "✗" : "✓"}
+              </span>
+              {s.message}
+            </div>
+          ))}
+        </div>
+      )}
+      {m.role === "assistant" &&
+        (() => {
+          // Live-created docs (from the stream) plus any file this
+          // message produced earlier and restored from the backend
+          // on reload — so the card survives F5 / reopening the chat.
+          const restored = m.documentId ? documents.find((d) => d.id === m.documentId) : undefined;
+          const createdDocs = [...(m.createdDocuments || [])];
+          if (restored && !createdDocs.some((d) => d.document_id === restored.id)) {
+            createdDocs.push({
+              document_id: restored.id,
+              filename: restored.original_filename,
+              file_type: restored.file_type,
+            });
+          }
+          if (createdDocs.length === 0) return null;
+          return (
+            <div className="created-docs">
+              <div className="created-docs__title">Созданные документы</div>
+              {createdDocs.map((d) => (
+                <div className="created-doc" key={d.document_id}>
+                  <span className="created-doc__icon">{fileIcon(d.file_type)}</span>
+                  <span className="created-doc__name" title={d.filename}>
+                    {d.filename}
+                  </span>
+                  <button
+                    type="button"
+                    className="created-doc__btn"
+                    onClick={() => void downloadDocument(d.document_id, d.filename)}
+                  >
+                    Скачать
+                  </button>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      {m.sources && m.sources.length > 0 && (
+        <div className="sources">
+          <div className="sources__title">
+            Источники · {m.sources.length}{" "}
+            {plural(m.sources.length, "совпадение", "совпадения", "совпадений")} — нажмите, чтобы открыть
+          </div>
+          {m.sources.slice(0, 3).map((s, i) => (
+            <button key={i} className="source" onClick={() => onOpenSource(s)}>
+              <div className="source__head">
+                <span className="source__title">
+                  <span className="source__title-icon">{fileIcon(extOf(s.filename))}</span>
+                  <span className="source__title-text">{s.filename}</span>
+                </span>
+                <span className="source__score">{(s.score * 100).toFixed(0)}%</span>
+              </div>
+              <div className="source__meta">Фрагмент {s.chunk_index}</div>
+              <div className="source__chunk">{s.text}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});

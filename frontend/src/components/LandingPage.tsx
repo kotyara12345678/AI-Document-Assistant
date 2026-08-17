@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { CSSProperties } from "react";
 import Reveal, { useReveal } from "./Reveal";
 
 interface Props {
@@ -327,11 +328,12 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
               </div>
             </Reveal>
             <div className="landing__pipeline">
+              <span className="pipeline-comet" aria-hidden="true" />
               {STEPS.map((s, i) => {
                 const Icon = s.icon;
                 return (
                   <Reveal key={s.title} delay={i * 110}>
-                    <div className="pipeline-step">
+                    <div className="pipeline-step" style={{ "--i": i } as CSSProperties}>
                       <span className="pipeline-step__index">{String(i + 1).padStart(2, "0")}</span>
                       <span className="pipeline-step__icon"><Icon /></span>
                       <span className="pipeline-step__title">{s.title}</span>
