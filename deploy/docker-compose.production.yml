@@ -87,6 +87,12 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # TLS: host dirs written by certbot on the server (see deploy/README.md).
+      # The container only enables HTTPS when both certificate files exist.
+      - "${APP_DIR:-/opt/ada-production}/certs:/etc/nginx/certs:ro"
+      - "${APP_DIR:-/opt/ada-production}/certbot-webroot:/usr/share/nginx/html/certbot:ro"
 
 volumes:
   production_postgres:

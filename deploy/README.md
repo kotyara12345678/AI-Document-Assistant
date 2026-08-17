@@ -5,7 +5,7 @@ The project ships as two Docker images published to GHCR:
 | Image | Built from | Prod |
 |-------|-----------|------|
 | `ghcr.io/kotyara12345678/ai-document-assistant-backend` | `backend/Dockerfile` | FastAPI + uvicorn |
-| `ghcr.io/kotyara12345678/ai-document-assistant-frontend` | `frontend/Dockerfile` | nginx serving the built SPA (proxies `/api` → backend) |
+| `ghcr.io/kotyara12345678/ai-document-assistant-frontend` | `frontend/Dockerfile.prod` | nginx serving the built SPA (proxies `/api`, `/api2`, `/health` → backend; TLS on `:443` when certs are mounted) |
 
 Targets are plain Docker Compose hosts (no Kubernetes). Each environment runs
 its own **single instance** of the full application stack behind nginx.
@@ -109,6 +109,59 @@ IMAGE_FRONTEND=ghcr.io/kotyara12345678/ai-document-assistant-frontend:<previous>
 - Staging DB binds to `127.0.0.1:55432`, production DB to `127.0.0.1:65432`,
   so both can coexist on one host without port clashes. Qdrant binds locally too.
 - Data stores are not publicly reachable: production backend binds to `127.0.0.1`
-  and is only reachable through the nginx frontend container on `:80`.
+  and is only reachable through the nginx frontend container on `:80` / `:443`.
+
+## TLS (Let's Encrypt) for production
+
+The production frontend container listens on `:80` and `:443`. HTTPS is enabled
+**automatically at container start** when a certificate pair exists in
+`$APP_DIR/certs/{fullchain.pem,privkey.pem}` (bind-mounted as `:ro` to
+`/etc/nginx/certs`); otherwise it serves plain HTTP (useful during first setup
+and for staging, which never mounts certs). `frontend/docker-entrypoint.d/`
+generates the `:443` server block and an HTTP→HTTPS redirect, keeping
+`/.well-known/acme-challenge/` on plain HTTP for renewals.
+
+One-time setup on the server (after the stack is up on `:80`, e.g. the first
+auto-deploy):
+
+```bash
+apt-get update && apt-get install -y certbot
+
+# HTTP-01 validation is served by the frontend container from this dir
+# (bind-mounted to /usr/share/nginx/html/certbot).
+mkdir -p /opt/ada-production/certbot-webroot
+
+certbot certonly --webroot \
+  -w /opt/ada-production/certbot-webroot \
+  -d ada.env.pm \
+  --agree-tos --no-eff-email -m savva.toch@mail.com
+
+# Drop certificates where the container picks them up, then restart it.
+cp /etc/letsencrypt/live/ada.env.pm/fullchain.pem /opt/ada-production/certs/fullchain.pem
+cp /etc/letsencrypt/live/ada.env.pm/privkey.pem  /opt/ada-production/certs/privkey.pem
+chmod 644 /opt/ada-production/certs/fullchain.pem
+chmod 600 /opt/ada-production/certs/privkey.pem
+docker compose -p ada-production \
+  -f /opt/ada-production/docker-compose.production.yml \
+  up -d --force-recreate frontend
+```
+
+Renewal (weekly cron; install as root with `crontab -e`):
+
+```bash
+0 3 * * 1 nice certbot renew --quiet --deploy-hook \
+  "cp /etc/letsencrypt/live/ada.env.pm/fullchain.pem /opt/ada-production/certs/fullchain.pem && \
+   cp /etc/letsencrypt/live/ada.env.pm/privkey.pem /opt/ada-production/certs/privkey.pem && \
+   chmod 644 /opt/ada-production/certs/fullchain.pem && chmod 600 /opt/ada-production/certs/privkey.pem && \
+   docker compose -p ada-production -f /opt/ada-production/docker-compose.production.yml restart frontend"
+```
+
+Notes:
+- `deploy.sh` and the compose file create `$APP_DIR/certs` and
+  `certbot-webroot` automatically; you do not need to create them by hand.
+- Port `443` must be open in the cloud/hosting firewall.
+- The post-deploy smoke in `deploy-production.yml` checks the public
+  `DEPLOY_PUBLIC_URL` (e.g. `https://ada.env.pm`); set that var so the smoke
+  goes through the real HTTPS entry point.
 - `deploy.sh` never stores secrets on the runner — the `.env` file is
   generated in the workflow only, from Environment secrets.

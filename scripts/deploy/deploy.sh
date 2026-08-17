@@ -25,6 +25,12 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 
 cd "${APP_DIR}"
 
+# Host dirs bind-mounted into the frontend container for TLS (see
+# deploy/README.md). Docker would create them on first `compose up` anyway,
+# but creating them explicitly (and as root) keeps certbot webroot permissions
+# predictable.
+mkdir -p "${APP_DIR}/certs" "${APP_DIR}/certbot-webroot"
+
 compose() {
     docker compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" "$@"
 }
