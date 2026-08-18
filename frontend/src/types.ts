@@ -70,6 +70,44 @@ export interface DocumentContent {
   content: string;
 }
 
+export interface CompareDocumentRef {
+  id: number;
+  original_filename: string;
+  file_type: string;
+  content_length: number;
+  created_at: string | null;
+  source_file_id: number | null;
+}
+
+export type DiffKind = "equal" | "delete" | "insert" | "replace";
+
+export interface DiffOperation {
+  kind: DiffKind;
+  left_start: number;
+  left_end: number;
+  right_start: number;
+  right_end: number;
+}
+
+export interface CompareSummary {
+  added_lines: number;
+  removed_lines: number;
+  changed_lines: number;
+  unchanged_lines: number;
+}
+
+export interface CompareResponse {
+  left: CompareDocumentRef;
+  right: CompareDocumentRef;
+  left_lines: string[];
+  right_lines: string[];
+  operations: DiffOperation[];
+  summary: CompareSummary;
+  equal: boolean;
+  truncated: boolean;
+  limit: number;
+}
+
 export interface SourceRef {
   document_id: number;
   filename: string;

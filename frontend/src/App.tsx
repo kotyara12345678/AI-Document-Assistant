@@ -22,6 +22,7 @@ import FileViewer from "./components/FileViewer";
 import AdminPanel from "./components/AdminPanel";
 import LandingFlow from "./components/LandingFlow";
 import UploadWarning from "./components/UploadWarning";
+import ComparePanel from "./components/ComparePanel";
 import { hasSeenUploadWarning, markUploadWarningSeen } from "./consent";
 import CopyableBlock, { extractCodeBlock } from "./codeBlock";
 
@@ -92,6 +93,8 @@ export default function App() {
   const [viewerHighlights, setViewerHighlights] = useState<string[]>([]);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  // Compare mode: which document is preselected on the left (null = closed).
+  const [compareDocId, setCompareDocId] = useState<number | null>(null);
   // Mobile-only drawer (left panel becomes a tab opened via the top-right button).
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Documents the user has pinned as context for the next message (UI chips).
@@ -414,6 +417,15 @@ export default function App() {
     setViewerHighlights([]);
   }, []);
 
+  const openCompare = useCallback((id: number) => {
+    setSidebarOpen(false);
+    setCompareDocId(id);
+  }, []);
+
+  const closeCompare = useCallback(() => {
+    setCompareDocId(null);
+  }, []);
+
   const toggleContextDoc = useCallback((id: number) => {
     setContextDocs((prev) =>
       prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
@@ -730,6 +742,16 @@ export default function App() {
                   </div>
                 </div>
                 <button
+                  className="doc-item__compare"
+                  title="Сравнить с другим документом или версией"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openCompare(doc.id);
+                  }}
+                >
+                  ⇄
+                </button>
+                <button
                   className="doc-item__delete"
                   title="Удалить документ"
                   onClick={(e) => {
@@ -921,6 +943,14 @@ export default function App() {
         loading={viewerLoading}
         onClose={closeViewer}
       />
+
+      {compareDocId != null && (
+        <ComparePanel
+          documents={documents}
+          initialId={compareDocId}
+          onClose={closeCompare}
+        />
+      )}
 
       {warningPending && (
         <UploadWarning

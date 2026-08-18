@@ -9,6 +9,7 @@ import type {
   ChatOut,
   ChatRequest,
   ChatResponse,
+  CompareResponse,
   CreatedDocument,
   DocumentContent,
   DocumentOut,
@@ -92,6 +93,23 @@ export async function fetchDocuments(): Promise<DocumentOut[]> {
 export async function fetchDocumentContent(id: number): Promise<DocumentContent> {
   const res = await fetch(`${BASE}/documents/${id}/content`, { headers: authHeaders() });
   return handle<DocumentContent>(res);
+}
+
+export async function fetchDocumentVersions(id: number): Promise<DocumentOut[]> {
+  const res = await fetch(`${BASE}/documents/${id}/versions`, { headers: authHeaders() });
+  return handle<DocumentOut[]>(res);
+}
+
+export async function compareDocuments(
+  leftId: number,
+  rightId: number,
+): Promise<CompareResponse> {
+  const res = await fetch(`${BASE}/documents/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ left_id: leftId, right_id: rightId }),
+  });
+  return handle<CompareResponse>(res);
 }
 
 export async function uploadDocuments(files: File[]): Promise<DocumentOut[]> {
