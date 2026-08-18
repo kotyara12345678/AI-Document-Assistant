@@ -231,6 +231,15 @@ SYSTEM_INSTRUCTION = (
     "изменён.'). If the tool result contains errors or unfilled placeholders, "
     "do not claim success: summarize exactly what is missing and ask the "
     "user for it. "
+    "ANTI-FABRICATION (critical): never claim that you called a tool, that a "
+    "tool returned data, that a document contains something, or that a file "
+    "was created, edited or is downloadable, unless the actual tool result in "
+    "THIS conversation proves it. If a tool was not called, failed, or "
+    "returned nothing useful, say so honestly and ask the user — never invent "
+    "tool calls, tool results, document contents, file names, document ids or "
+    "download links. A download link must come only from the download_url the "
+    "tool actually returned; a created/edited file must come only from a "
+    "success: true tool result with a real document_id. "
 )
 
 # Short excerpt handed back to the model per matched document.

@@ -151,6 +151,19 @@ class TestSystemInstructionPolicy:
         assert "original document is" in text
         assert "не измен" in text
 
+    def test_anti_fabrication_rule_pinned(self):
+        # Critical regression: the model must never claim tools were called,
+        # results returned, documents read, files created or links provided
+        # unless the real tool result in the conversation proves it.
+        text = SYSTEM_INSTRUCTION.lower()
+        assert "anti-fabrication" in text
+        assert "never claim that you called a tool" in text
+        assert "unless the actual tool result" in text
+        assert "tool was not called, failed" in text
+        assert "never invent tool calls" in text
+        assert "download_url" in text
+        assert "success: true tool result" in text
+
 
 # ---------------------------------------------------------------------------
 # Behavioural tests (real retrieval + mocked LLM).
