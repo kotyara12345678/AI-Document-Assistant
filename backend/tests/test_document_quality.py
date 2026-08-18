@@ -55,6 +55,46 @@ def test_placeholders_deduped_and_ordered():
     assert find_placeholders("[дата] и [ДАТА]") == ["[дата]"]
 
 
+def test_fake_financial_values_are_placeholders():
+    # The model must never fill figures it does not have: $XXX/$YYY/$ZZZ and
+    # bare XYZ repeats are invented values, not real data.
+    text = (
+        "| Общий доход | $XXX млн |\n"
+        "| Общие расходы | $YYY млн |\n"
+        "| Чистая прибыль | ZZZ |\n"
+    )
+    found = find_placeholders(text)
+    assert "$XXX" in found
+    assert "$YYY" in found
+    assert "ZZZ" in found
+
+
+def test_punt_phrases_are_placeholders():
+    # "перечислены в документе" / "указаны в документе" / "(из документа)" /
+    # "(если имеются в документе)" mean the model deferred the field instead of
+    # filling real data.
+    text = (
+        "Ответственные лица перечислены в документе. "
+        "Сроки указаны в документе. "
+        "Задачи 1 и 2 (из документа). "
+        "Другие участники (если имеются в документе)."
+    )
+    found = find_placeholders(text)
+    assert any("перечислены в документе" in h for h in found)
+    assert any("указаны в документе" in h for h in found)
+    assert any("(из документа)" in h for h in found)
+    assert any("если имеются в документе" in h for h in found)
+
+
+def test_normal_document_terms_not_flagged_as_punt():
+    # Ordinary prose that merely references a document must NOT be flagged.
+    text = (
+        "Согласно пункту 5.1 настоящего договора, условия указаны в приложении. "
+        "Перечень работ приведён на стр. 3."
+    )
+    assert find_placeholders(text) == []
+
+
 def test_empty_and_none_input():
     assert find_placeholders("") == []
     assert find_placeholders(None) == []

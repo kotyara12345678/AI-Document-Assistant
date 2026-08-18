@@ -306,3 +306,109 @@ def test_download_url_only_from_real_tool_result(client, monkeypatch, user_id):
     ]
     assert payload["download_url"] == f"{API_PREFIX}/documents/{real_doc_id}/file"
     assert payload["download_url"] != fake_url_in_answer
+
+
+# ---------------------------------------------------------------------------
+# 5. Anti-fabrication of the model's PROSE: the final answer may not claim a
+#    created file / download link that no real tool result backs up.
+# ---------------------------------------------------------------------------
+
+
+def test_prose_claim_of_created_pdf_is_sanitized(client, monkeypatch, user_id):
+    """The model's free-text answer claims 'PDF created, here is a link' but no
+    create_document was called: the backend replaces the fabricated claim with
+    an honest statement and strips the fake URL."""
+    fake_url = f"{API_PREFIX}/documents/42/file"
+    _scripted_functions(
+        monkeypatch,
+        [
+            (
+                {
+                    "content": (
+                        "Ваш отчёт готов в формате PDF и доступен по ссылке: "
+                        f"{fake_url}"
+                    )
+                },
+                None,
+            )
+        ],
+    )
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={"question": "создай PDF-отчёт по проекту УралТехноСтрой"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert data["created_documents"] == []
+    assert data["tool_calls"] == []
+    # The fabricated URL must not survive anywhere in the answer.
+    assert fake_url not in data["answer"]
+    # The answer must be honest: no claim that a file was really created.
+    assert "не был создан" in data["answer"] or "не создан" in data["answer"]
+
+
+def test_prose_claim_after_failed_create_is_sanitized(client, monkeypatch, user_id):
+    """create_document FAILS (fabricated $XXX figures are rejected by the
+    placeholder gate); the model then claims success in prose. The backend must
+    replace the success claim with the honest error."""
+    create_msg = _tool_call_message(
+        "create_document",
+        {
+            "document_spec": {
+                "title": "Отчёт",
+                "blocks": [
+                    {"type": "paragraph", "text": "Общий доход: $XXX млн."},
+                    {"type": "paragraph", "text": "Общие расходы: $YYY млн."},
+                ],
+            },
+            "output_format": "pdf",
+        },
+    )
+    _scripted_functions(
+        monkeypatch,
+        [
+            (create_msg, "s"),
+            ({"content": "Отчёт создан в PDF, скачайте файл."}, None),
+        ],
+    )
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={"question": "создай PDF-отчёт по проекту УралТехноСтрой"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    # The tool really rejected the $XXX/$YYY placeholders.
+    created = [r for r in data["tool_results"] if r["name"] == "create_document"]
+    payload = json.loads(created[-1]["content"])
+    assert payload["success"] is False
+    assert any("$XXX" in p for p in payload.get("placeholders", []))
+
+    # The model's prose success claim must be replaced by the honest outcome.
+    assert data["created_documents"] == []
+    assert "файл не создан" in data["answer"].lower()
+    assert "скачайте" not in data["answer"].lower()
+    assert _count_documents(user_id) == 0
+
+
+def test_honest_failure_prose_is_not_rewritten(client, monkeypatch, user_id):
+    """When the model honestly reports the failure, the backend must NOT
+    rewrite it — only fabricated success claims are sanitized."""
+    bad_create = _tool_call_message(
+        "create_document",
+        {"document_spec": {"title": "X", "blocks": []}, "output_format": "exe"},
+    )
+    honest_text = "Не удалось создать документ: указан неверный формат."
+    _scripted_functions(
+        monkeypatch,
+        [(bad_create, "s"), ({"content": honest_text}, None)],
+    )
+
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай договор"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert data["answer"] == honest_text

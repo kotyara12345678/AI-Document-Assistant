@@ -78,6 +78,21 @@ _DOUBLE_BRACE_RE = re.compile(r"\{\{.*?\}\}", re.IGNORECASE | re.DOTALL)
 _SQUARE_RE = re.compile(r"\[([^\]]{0,60})\]", re.IGNORECASE | re.DOTALL)
 _HARMLESS_SQUARE_RE = re.compile(r"^\[\d+\]$", re.IGNORECASE | re.DOTALL)
 
+# Repeated-letter fake values the model invents instead of real data:
+# "$XXX млн", "YYY", "ZZZ", "XYZ ..." — clearly unfilled numeric slots.
+_FAKE_VALUE_RE = re.compile(r"(?<![A-Za-z])[XYZ]{3,}(?![A-Za-z])", re.IGNORECASE)
+_CURRENCY_FAKE_RE = re.compile(r"\$[XYZ]{2,}", re.IGNORECASE)
+
+# Phrases that mean the model punted instead of filling real data, e.g.
+# "Ответственные лица перечислены в документе", "Сроки указаны в документе",
+# "(если имеются в документе)", "(из документа)".
+_PUNT_PHRASE_RES = (
+    re.compile(r"перечислен[аыо]?\s+в\s+документ\w*", re.IGNORECASE),
+    re.compile(r"указан[аыо]?\s+в\s+документ\w*", re.IGNORECASE),
+    re.compile(r"если\s+име(?:ется|ются)\s+(?:в\s+)?документ\w*", re.IGNORECASE),
+    re.compile(r"\(из\s+документ\w*\)", re.IGNORECASE),
+)
+
 _TEMPLATE_HINTS = (
     "по шаблону",
     "по образцу",
@@ -137,6 +152,16 @@ def find_placeholders(content: str) -> list[str]:
     # Bare TODO / TBD / N/A tokens.
     for word in ("TODO", "TBD", "N/A"):
         hits.extend(re.findall(rf"\b{re.escape(word)}\b", text, flags=re.IGNORECASE))
+
+    # Fake values the model invents instead of real data ($XXX млн, YYY, ZZZ).
+    hits.extend(m.group(0) for m in _CURRENCY_FAKE_RE.finditer(text))
+    hits.extend(m.group(0) for m in _FAKE_VALUE_RE.finditer(text))
+
+    # Punt phrases: "перечислены в документе", "указаны в документе",
+    # "(если имеются в документе)", "(из документа)" — the model deferred the
+    # field to a source instead of filling real data.
+    for pattern in _PUNT_PHRASE_RES:
+        hits.extend(m.group(0).strip() for m in pattern.finditer(text))
 
     seen: set[str] = set()
     unique: list[str] = []

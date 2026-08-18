@@ -24,6 +24,7 @@ executed) and the owner is always taken from the request context.
 
 import json
 import logging
+import re
 import uuid
 
 from sqlalchemy.orm import Session
@@ -718,6 +719,10 @@ class AgentService:
                 factual = _derive_tool_confirmation(results)
                 if factual:
                     answer = factual
+
+            # ANTI-FABRICATION: never let the model's prose claim a created
+            # file or a download link that no real tool result backs up.
+            answer = _sanitize_final_answer(answer, results)
 
             assistant_msg = _save_message(db, user_id, chat_id, "assistant", answer)
             # Persist task/document state so the next turn (or a restart) resumes.
@@ -1867,6 +1872,115 @@ def _derive_tool_confirmation(results: list[AgentToolResult]) -> str:
         if confirmation:
             return confirmation
     return ""
+
+
+_DOWNLOAD_URL_RE = re.compile(
+    rf"{re.escape(settings.API_PREFIX)}/documents/(\d+)/file"
+)
+
+
+def _successful_file_ids(results: list[AgentToolResult]) -> set[int]:
+    """document_ids that were REALLY created/edited successfully this turn."""
+    ids: set[int] = set()
+    for result in results:
+        if result.name not in ("create_document", "edit_document"):
+            continue
+        try:
+            payload = json.loads(result.content)
+        except ValueError:
+            continue
+        if payload.get("success") and payload.get("document_id") is not None:
+            try:
+                ids.add(int(payload["document_id"]))
+            except (TypeError, ValueError):
+                continue
+    return ids
+
+
+_SUCCESS_CLAIMS = (
+    "создан",
+    "сгенерирован",
+    "сформирован",
+    "готов",
+    "доступен",
+    "скачайте",
+    "скачать",
+    "сохранён",
+    "файл создан",
+    "pdf создан",
+    "файл готов",
+)
+_NEGATION_HINTS = (
+    "не создан",
+    "не удалось",
+    "не смог",
+    "невозможно",
+    "недоступен",
+    "не доступен",
+    "не готов",
+    "не сгенерирован",
+    "не сформирован",
+    "не получилось",
+)
+
+
+def _looks_like_success_claim(text: str) -> bool:
+    low = text.lower()
+    if any(hint in low for hint in _NEGATION_HINTS):
+        return False
+    return any(word in low for word in _SUCCESS_CLAIMS)
+
+
+def _honest_creation_failure(results: list[AgentToolResult]) -> str:
+    """An honest final answer when no file was really created this turn."""
+    for result in reversed(results):
+        if result.name not in ("create_document", "edit_document"):
+            continue
+        try:
+            payload = json.loads(result.content)
+        except ValueError:
+            continue
+        if not payload.get("success"):
+            error = payload.get("error") or "недостаточно данных"
+            return (
+                "Файл не создан: "
+                + str(error)
+                + ". Я не выдумываю данные — укажите недостающие сведения, "
+                "и я подготовлю документ."
+            )
+    return (
+        "Файл не был создан: инструменты создания не вызывались, а нужные "
+        "данные не были получены. Недостающие сведения не выдумываются — "
+        "укажите их, и я подготовлю документ."
+    )
+
+
+def _sanitize_final_answer(answer: str, results: list[AgentToolResult]) -> str:
+    """Anti-fabrication guard for the model's free-text final answer.
+
+    The structured fields (tool_calls / tool_results / sources /
+    created_documents / document_created events) are already built ONLY from
+    real tool executions. This function closes the last hole: the model's
+    *prose* could still claim "PDF created, download here" when nothing was
+    actually created. We strip download URLs that do not point to a real file
+    created this turn, and if no file was created at all we replace a
+    fabricated success claim with an honest statement.
+    """
+    if not answer or not answer.strip():
+        return answer
+    real_ids = _successful_file_ids(results)
+
+    def _replace_url(match: re.Match) -> str:
+        doc_id = int(match.group(1))
+        return match.group(0) if doc_id in real_ids else ""
+
+    sanitized = _DOWNLOAD_URL_RE.sub(_replace_url, answer)
+    if real_ids:
+        # A real file exists this turn; keep the model's prose otherwise.
+        return sanitized
+    if _looks_like_success_claim(sanitized):
+        return _honest_creation_failure(results)
+    return sanitized
 
 
 def _derive_created_documents(results: list[AgentToolResult]) -> list[dict]:
