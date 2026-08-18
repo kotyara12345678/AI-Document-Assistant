@@ -507,6 +507,10 @@ export default function App() {
       const userMsg: Message = { id: nextLocalId(), role: "user", text: trimmed };
       const assistantId = nextLocalId();
       const assistantMsg: Message = { id: assistantId, role: "assistant", text: "", agentSteps: [] };
+      // Sending pins the view back to the bottom even if the user had
+      // scrolled up to read history; the [messages] effect below keeps it
+      // pinned while the assistant answer streams in.
+      stickToBottomRef.current = true;
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInput("");
       setLoading(true);
