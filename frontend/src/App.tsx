@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { AgentStep, ChatOut, CreatedDocument, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
 import {
   createChat,
@@ -106,6 +107,10 @@ export default function App() {
   const stickToBottomRef = useRef(true);
   const prevMessagesLenRef = useRef(0);
 
+  // Mobile drawer swipe-to-close: press on the panel and drag left to hide it.
+  const sidebarElRef = useRef<HTMLElement | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
+
   const flashNotice = useCallback((msg: string) => {
     setNotice(msg);
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
@@ -190,6 +195,76 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [sidebarOpen]);
+
+  // --- Mobile drawer swipe-to-close (drag the panel left) ---
+  const clearSidebarDrag = useCallback(() => {
+    dragStartRef.current = null;
+    const el = sidebarElRef.current;
+    if (!el) return;
+    el.style.transition = "";
+    el.style.transform = "";
+  }, []);
+
+  const onSidebarPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLElement>) => {
+      if (!sidebarOpen) return;
+      const el = e.currentTarget;
+      sidebarElRef.current = el;
+      dragStartRef.current = { x: e.clientX, y: e.clientY, t: Date.now() };
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* not critical */
+      }
+      el.style.transition = "none";
+    },
+    [sidebarOpen]
+  );
+
+  const onSidebarPointerMove = useCallback((e: ReactPointerEvent<HTMLElement>) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    const el = sidebarElRef.current;
+    if (!el) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // Follow the finger only on a leftward horizontal swipe, so that
+    // vertical scrolling inside the drawer keeps working normally.
+    if (dx < 0 && Math.abs(dx) > Math.abs(dy)) {
+      el.style.transform = `translateX(${dx}px)`;
+    }
+  }, []);
+
+  const finishSidebarDrag = useCallback(
+    (e: ReactPointerEvent<HTMLElement>) => {
+      const start = dragStartRef.current;
+      const el = sidebarElRef.current;
+      dragStartRef.current = null;
+      if (!start || !el) return;
+      const dx = e.clientX - start.x;
+      const dt = Date.now() - start.t;
+      const swipeLeft = dx <= -72 || (dx <= -40 && dt < 300);
+      el.style.transition = "transform 0.28s ease";
+      if (swipeLeft) {
+        // Animate fully off-screen, then switch state so the class takes over.
+        el.style.transform = "translateX(-102%)";
+        window.setTimeout(() => {
+          setSidebarOpen(false);
+          clearSidebarDrag();
+        }, 300);
+      } else {
+        // Snap back to the open position.
+        el.style.transform = "translateX(0)";
+        window.setTimeout(() => clearSidebarDrag(), 300);
+      }
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* not critical */
+      }
+    },
+    [clearSidebarDrag]
+  );
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -533,7 +608,13 @@ export default function App() {
 
   return (
     <div className="layout">
-      <aside className={`sidebar ${sidebarOpen ? "sidebar--open" : ""}`}>
+      <aside
+        className={`sidebar ${sidebarOpen ? "sidebar--open" : ""}`}
+        onPointerDown={onSidebarPointerDown}
+        onPointerMove={onSidebarPointerMove}
+        onPointerUp={finishSidebarDrag}
+        onPointerCancel={clearSidebarDrag}
+      >
         <div className="sidebar__header">
           <span className="sidebar__brand">ADA</span>
           <div className="sidebar__actions">
