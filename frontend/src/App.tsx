@@ -95,6 +95,8 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false);
   // Compare mode: which document is preselected on the left (null = closed).
   const [compareDocId, setCompareDocId] = useState<number | null>(null);
+  // Docs list "⋯" menu: which document's actions menu is open (null = closed).
+  const [docMenuFor, setDocMenuFor] = useState<number | null>(null);
   // Mobile-only drawer (left panel becomes a tab opened via the top-right button).
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Documents the user has pinned as context for the next message (UI chips).
@@ -493,6 +495,20 @@ export default function App() {
     [viewer, closeViewer, flashNotice]
   );
 
+  const saveDocument = useCallback(
+    async (doc: DocumentOut) => {
+      setDocMenuFor(null);
+      setError(null);
+      try {
+        await downloadDocument(doc.id, doc.original_filename);
+        flashNotice(`«${doc.original_filename}» скачан.`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Не удалось скачать документ");
+      }
+    },
+    [flashNotice]
+  );
+
   const clearAllDocuments = useCallback(async () => {
     if (!window.confirm("Удалить ВСЕ документы и их индексы?")) return;
     try {
@@ -741,26 +757,55 @@ export default function App() {
                     {doc.file_type.toUpperCase()} · {formatBytes(doc.file_size)}
                   </div>
                 </div>
-                <button
-                  className="doc-item__compare"
-                  title="Сравнить с другим документом или версией"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openCompare(doc.id);
-                  }}
-                >
-                  ⇄
-                </button>
-                <button
-                  className="doc-item__delete"
-                  title="Удалить документ"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void removeDocument(doc);
-                  }}
-                >
-                  ✕
-                </button>
+                <div className="doc-item__actions">
+                  {docMenuFor === doc.id && (
+                    <div className="doc-menu-backdrop" onClick={() => setDocMenuFor(null)} />
+                  )}
+                  <button
+                    className="doc-item__menu"
+                    title="Действия с документом"
+                    aria-label="Действия с документом"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDocMenuFor((cur) => (cur === doc.id ? null : doc.id));
+                    }}
+                  >
+                    ⋮
+                  </button>
+                  {docMenuFor === doc.id && (
+                    <div className="doc-menu">
+                      <button
+                        className="doc-menu__item"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void saveDocument(doc);
+                        }}
+                      >
+                        Скачать файл
+                      </button>
+                      <button
+                        className="doc-menu__item"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDocMenuFor(null);
+                          openCompare(doc.id);
+                        }}
+                      >
+                        Сравнить
+                      </button>
+                      <button
+                        className="doc-menu__item doc-menu__item--danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDocMenuFor(null);
+                          void removeDocument(doc);
+                        }}
+                      >
+                        Удалить файл
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             ))
           )}

@@ -360,26 +360,74 @@ a {
   margin-top: 2px;
 }
 
-.doc-item__compare {
+.doc-item__actions {
+  position: relative;
   flex: none;
+}
+
+.doc-item__menu {
   border: none;
   background: transparent;
   color: var(--text-dim);
-  padding: 2px 6px;
+  padding: 2px 8px;
   margin: -4px -2px 0 0;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1;
   opacity: 0;
   transition: opacity 0.15s, background 0.15s, color 0.15s;
 }
 
-.doc-item:hover .doc-item__compare {
+.doc-item:hover .doc-item__menu {
   opacity: 1;
 }
 
-.doc-item__compare:hover {
+.doc-item__menu:hover {
   background: var(--bg-soft-2);
   color: var(--accent);
+}
+
+.doc-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.doc-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 50;
+  margin-top: 4px;
+  min-width: 200px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-menu__item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.doc-menu__item:hover {
+  background: var(--bg-soft);
+}
+
+.doc-menu__item--danger {
+  color: var(--error);
+  font-weight: 600;
 }
 
 .sidebar__user {
