@@ -14,6 +14,8 @@ import base64
 import json
 import logging
 import re
+import socket
+import ssl
 import threading
 import time
 import uuid
@@ -210,23 +212,85 @@ def _post_json(
     raise last_exc
 
 
+def _classify_transport_error(exc: BaseException) -> tuple[str, str]:
+    """Classify an httpx transport failure into (category, detail).
+
+    Categories: ``timeout``, ``connection_reset``, ``dns_error``, ``tls_error``,
+    ``connect_error``, ``read_error``, ``protocol_error``, ``unknown``. The
+    detail string is the exception text with no credentials (it never carries
+    headers). The whole cause chain (httpx wraps httpcore/socket errors) is
+    collected and scanned deepest-first so the real root cause drives the
+    category instead of the outermost httpx wrapper.
+    """
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        chain.append(cursor)
+        cursor = cursor.__cause__
+
+    for cause in reversed(chain):
+        if isinstance(cause, socket.gaierror):
+            return ("dns_error", str(cause))
+        if isinstance(cause, ssl.SSLError):
+            return ("tls_error", str(cause))
+        if isinstance(cause, ConnectionResetError):
+            return ("connection_reset", str(cause))
+        if isinstance(cause, httpx.TimeoutException):
+            return ("timeout", str(cause))
+        if isinstance(cause, httpx.ConnectError):
+            return ("connect_error", str(cause))
+        if isinstance(cause, httpx.ReadError):
+            return ("read_error", str(cause))
+        if isinstance(cause, httpx.RemoteProtocolError):
+            return ("protocol_error", str(cause))
+        if isinstance(cause, httpx.TransportError):
+            return ("transport_error", str(cause))
+    return ("unknown", str(exc))
+
+
 def _fetch_access_token(client: httpx.Client) -> str:
     """Request a fresh access token via the OAuth client-credentials flow."""
+    request_headers = {
+        "Authorization": _basic_auth_header(),
+        "RqUID": str(uuid.uuid4()),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
     try:
         response = client.post(
             settings.GIGACHAT_AUTH_URL,
-            headers={
-                "Authorization": _basic_auth_header(),
-                "RqUID": str(uuid.uuid4()),
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
+            headers=request_headers,
             data={"scope": settings.GIGACHAT_SCOPE},
         )
         response.raise_for_status()
         data = response.json()
     except GeminiError:
         raise
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        body = exc.response.text or ""
+        logger.error(
+            "GigaChat OAuth token request failed: HTTP %s on %s. Response body: %s",
+            status,
+            settings.GIGACHAT_AUTH_URL,
+            body[:400],
+        )
+        raise GeminiError(
+            f"GigaChat OAuth token request failed: HTTP {status} on {settings.GIGACHAT_AUTH_URL}"
+        ) from exc
+    except (httpx.TimeoutException, httpx.TransportError, OSError) as exc:
+        category, detail = _classify_transport_error(exc)
+        logger.error(
+            "GigaChat OAuth token request failed: %s on %s. Detail: %s",
+            category,
+            settings.GIGACHAT_AUTH_URL,
+            detail,
+        )
+        raise GeminiError(
+            f"GigaChat OAuth token request failed: {category} on {settings.GIGACHAT_AUTH_URL}"
+        ) from exc
     except Exception as exc:
         logger.exception("GigaChat OAuth token request failed")
         raise GeminiError(f"GigaChat OAuth token request failed: {exc}") from exc

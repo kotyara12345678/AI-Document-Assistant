@@ -1,10 +1,22 @@
 """Unit tests for the LLM service (GigaChat chat completions). No network calls."""
 
+import base64
+import socket
+import ssl
 import types
+import uuid
 
+import httpx
 import pytest
 
-from app.services.gemini import GeminiError, chat_with_functions, generate_answer
+from app.services.gemini import (
+    GeminiError,
+    _classify_transport_error,
+    _create_client,
+    _fetch_access_token,
+    chat_with_functions,
+    generate_answer,
+)
 
 KEY = "test-key"
 
@@ -342,3 +354,139 @@ def test_chat_with_functions_http_422_logs_body_and_no_secrets(monkeypatch):
     assert "422" in str(excinfo.value)
     # Sanity: the actual request still carried the auth header (not logged).
     assert cli.last_kwargs["headers"]["Authorization"] == f"Bearer {KEY}"
+
+
+# --- Googletest-style OAuth regression tests ---
+
+
+class _OAuthFakeClient:
+    """Records the exact OAuth POST; optionally fails on the first try."""
+
+    def __init__(self, token_data=None, error=None):
+        self._token_data = token_data if token_data is not None else {}
+        self._error = error
+        self.calls = []
+
+    def post(self, url, headers=None, data=None, **kwargs):
+        self.calls.append({"url": url, "headers": dict(headers or {}), "data": dict(data or {})})
+        if self._error is not None:
+            raise self._error
+        resp = httpx.Response(
+            200,
+            json=self._token_data,
+            request=httpx.Request("POST", url),
+        )
+        return resp
+
+
+def _oauth_settings(monkeypatch):
+    """Settings object for OAuth: everything _fetch_access_token needs."""
+    fake = types.SimpleNamespace(
+        GIGACHAT_CLIENT_ID="client-id",
+        GIGACHAT_CLIENT_SECRET="client-secret",
+        GIGACHAT_AUTH_URL="https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+        GIGACHAT_SCOPE="GIGACHAT_API_PERS",
+        GIGACHAT_TIMEOUT=60.0,
+        GIGACHAT_READ_TIMEOUT=300.0,
+    )
+    monkeypatch.setattr("app.services.gemini.settings", fake)
+    return fake
+
+
+def test_oauth_request_shape(monkeypatch):
+    """OAuth POST must hit the auth URL with Basic auth, RqUID, form scope."""
+    _oauth_settings(monkeypatch)
+    client = _OAuthFakeClient(token_data={"access_token": "tok-123", "expires_at": 0})
+    token = _fetch_access_token(client)
+    assert token == "tok-123"
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["url"] == "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    auth = call["headers"]["Authorization"]
+    expected = "Basic " + base64.b64encode(b"client-id:client-secret").decode()
+    assert auth == expected
+    assert call["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert call["headers"]["Accept"] == "application/json"
+    assert uuid.UUID(call["headers"]["RqUID"]).version == 4
+    assert call["data"] == {"scope": "GIGACHAT_API_PERS"}
+
+
+def test_oauth_client_timeout_config(monkeypatch):
+    """_create_client keeps connect tight and read long (as configured)."""
+    _oauth_settings(monkeypatch)
+    client = _create_client()
+    t = client.timeout
+    assert t.connect == 60.0
+    assert t.write == 60.0
+    assert t.read == 300.0
+    assert t.pool == 60.0
+
+
+@pytest.mark.parametrize(
+    "exception,category",
+    [
+        (httpx.ConnectTimeout("timed out"), "timeout"),
+        (httpx.ReadTimeout("timed out"), "timeout"),
+        (httpx.ConnectError("conn refused"), "connect_error"),
+        (ssl.SSLError("handshake failed"), "tls_error"),
+    ],
+)
+def test_oauth_transport_error_classified(monkeypatch, exception, category):
+    fake = _oauth_settings(monkeypatch)
+    client = _OAuthFakeClient(error=exception)
+    with pytest.raises(GeminiError) as excinfo:
+        _fetch_access_token(client)
+    assert category in str(excinfo.value)
+    assert fake.GIGACHAT_AUTH_URL in str(excinfo.value)
+
+
+def test_oauth_connection_reset_classified(monkeypatch):
+    """A peer RST must be labelled connection_reset, not a generic error."""
+    _oauth_settings(monkeypatch)
+    cause = ConnectionResetError(104, "Connection reset by peer")
+    exc = httpx.ConnectError("connection reset by peer")  # httpx wraps the OSError
+    exc.__cause__ = cause
+    client = _OAuthFakeClient(error=exc)
+    with pytest.raises(GeminiError) as excinfo:
+        _fetch_access_token(client)
+    assert "connection_reset" in str(excinfo.value)
+
+
+def test_oauth_dns_error_classified(monkeypatch):
+    _oauth_settings(monkeypatch)
+    cause = socket.gaierror(-2, "Name or service not known")
+    exc = httpx.ConnectError("dns lookup failed")
+    exc.__cause__ = cause
+    client = _OAuthFakeClient(error=exc)
+    with pytest.raises(GeminiError) as excinfo:
+        _fetch_access_token(client)
+    assert "dns_error" in str(excinfo.value)
+
+
+def test_oauth_http_error_classified(monkeypatch):
+    _oauth_settings(monkeypatch)
+    resp = httpx.Response(
+        401,
+        json={"error": "invalid_client"},
+        request=httpx.Request("POST", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"),
+    )
+    exc = httpx.HTTPStatusError("unauthorized", request=httpx.Request("POST", resp.url), response=resp)
+    client = _OAuthFakeClient(error=exc)
+    with pytest.raises(GeminiError) as excinfo:
+        _fetch_access_token(client)
+    assert "HTTP 401" in str(excinfo.value)
+
+
+def test_oauth_missing_token_raises(monkeypatch):
+    _oauth_settings(monkeypatch)
+    client = _OAuthFakeClient(token_data={})
+    with pytest.raises(GeminiError, match="access_token"):
+        _fetch_access_token(client)
+
+
+def test_classify_transport_error_primitives():
+    assert _classify_transport_error(httpx.ConnectTimeout("t"))[0] == "timeout"
+    reset = ConnectionResetError(104, "reset")
+    assert _classify_transport_error(reset)[0] == "connection_reset"
+    assert _classify_transport_error(socket.gaierror(-2, "n"))[0] == "dns_error"
+    assert _classify_transport_error(ssl.SSLError("tls"))[0] == "tls_error"
