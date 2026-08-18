@@ -3238,114 +3238,6 @@ a {
   max-width: 200px;
 }
 
-/* ---------- безопасность + преимущества ---------- */
-
-.landing__security {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 56px;
-  align-items: start;
-}
-
-.security-card {
-  position: relative;
-  background: linear-gradient(180deg, var(--lnd-accent-soft), var(--lnd-panel));
-  border: 1px solid var(--lnd-accent-border);
-  border-radius: 18px;
-  padding: 34px 32px;
-}
-
-.security-card__icon {
-  display: inline-flex;
-  width: 46px;
-  height: 46px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 12px;
-  background: var(--lnd-accent-soft);
-  border: 1px solid var(--lnd-accent-border);
-  color: var(--lnd-accent);
-  margin-bottom: 20px;
-}
-
-.security-card__title {
-  margin: 0 0 10px;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.security-card__text {
-  margin: 0 0 22px;
-  font-size: 14.5px;
-  line-height: 1.6;
-  color: var(--text-dim);
-}
-
-.security-card__list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.security-card__list li {
-  position: relative;
-  padding-left: 24px;
-  font-size: 13.5px;
-  color: var(--text);
-}
-
-.security-card__list li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 6px;
-  width: 12px;
-  height: 12px;
-  border: 1px solid var(--lnd-accent-border);
-  border-radius: 50%;
-  background: var(--lnd-accent-soft);
-}
-
-.landing__benefits {
-  display: flex;
-  flex-direction: column;
-}
-
-.benefit {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 15px 4px;
-  border-bottom: 1px solid var(--lnd-line);
-}
-
-.benefit:first-child {
-  border-top: 1px solid var(--lnd-line);
-}
-
-.benefit__check {
-  display: inline-flex;
-  width: 26px;
-  height: 26px;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--lnd-accent-soft);
-  border: 1px solid var(--lnd-accent-border);
-  color: var(--lnd-accent);
-}
-
-.benefit__text {
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--text);
-}
-
 /* ---------- CTA ---------- */
 
 .landing__cta {
@@ -3764,11 +3656,6 @@ a {
 
   .pipeline-comet {
     display: none;
-  }
-
-  .landing__security {
-    grid-template-columns: 1fr;
-    gap: 40px;
   }
 
   .landing__footer-inner {

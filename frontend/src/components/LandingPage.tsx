@@ -105,7 +105,7 @@ const FEATURES: Feature[] = [
   { icon: IconAnalyze, title: "Анализ документов", text: "Ответы на вопросы по содержимому загруженных файлов." },
   { icon: IconEdit, title: "Редактирование", text: "Изменение текста и структуры документов с сохранением исходного файла." },
   { icon: IconGenerate, title: "Генерация документов", text: "Создание новых документов на основе предоставленной информации." },
-  { icon: IconShield, title: "Безопасная изоляция", text: "Документы пользователей не смешиваются между аккаунтами." },
+  { icon: IconShield, title: "Мгновенный ответ", text: "Один вопрос — и нужные фрагменты из ваших файлов уже перед глазами." },
 ];
 
 interface Step {
@@ -120,16 +120,6 @@ const STEPS: Step[] = [
   { icon: IconSearch, title: "Поиск", text: "Векторный индекс находит релевантные места" },
   { icon: IconGenerate, title: "AI", text: "Модель собирает структурированный ответ" },
   { icon: IconShield, title: "Результат", text: "Ответ, источники и выделенные фрагменты" },
-];
-
-const BENEFITS: string[] = [
-  "Единое пространство для документов",
-  "Быстрый поиск по содержимому",
-  "AI-анализ и ответы на вопросы",
-  "Редактирование файлов с сохранением оригинала",
-  "Работа с несколькими форматами",
-  "Оригиналы документов не изменяются",
-  "Удобная история работы",
 ];
 
 function HeroVisual() {
@@ -237,7 +227,6 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
           <nav className={`landing__links ${menuOpen ? "landing__links--open" : ""}`}>
             <button type="button" onClick={() => scrollTo("features")}>Возможности</button>
             <button type="button" onClick={() => scrollTo("how")}>Как работает</button>
-            <button type="button" onClick={() => scrollTo("security")}>Безопасность</button>
             <button type="button" onClick={onOpenDocs}>Документация</button>
           </nav>
 
@@ -346,53 +335,11 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
           </div>
         </section>
 
-        <section className="landing__section" id="security">
-          <div className="landing__wrap">
-            <Reveal>
-              <div className="landing__section-head">
-                <span className="landing__section-kicker">Безопасность</span>
-                <h2 className="landing__section-title">Данные — под контролем</h2>
-              </div>
-            </Reveal>
-
-            <div className="landing__security">
-              <Reveal className="landing__security-main">
-                <div className="security-card">
-                  <span className="security-card__icon"><IconShield size={26} /></span>
-                  <h3 className="security-card__title">Безопасная изоляция</h3>
-                  <p className="security-card__text">Документы пользователей не смешиваются между аккаунтами.</p>
-                  <ul className="security-card__list">
-                    <li>Изоляция данных между аккаунтами</li>
-                    <li>Доступ только после авторизации</li>
-                    <li>Ролевой контроль: пользователь и администратор</li>
-                    <li>История операций по документам</li>
-                  </ul>
-                </div>
-              </Reveal>
-
-              <Reveal delay={120} className="landing__security-list">
-                <div className="landing__benefits">
-                  {BENEFITS.map((b) => (
-                    <div className="benefit" key={b}>
-                      <span className="benefit__check">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="m4 12.5 5 5L20 6.5" />
-                        </svg>
-                      </span>
-                      <span className="benefit__text">{b}</span>
-                    </div>
-                  ))}
-                </div>
-              </Reveal>
-            </div>
-          </div>
-        </section>
-
         <section className="landing__cta">
           <div className="landing__cta-grid" />
           <div className="landing__wrap landing__cta-inner">
             <Reveal>
-              <h2 className="landing__cta-title">Ваши документы. Один интеллектуальный помощник.</h2>
+              <h2 className="landing__cta-title">Умный поиск в ваших документах за секунды.</h2>
               <p className="landing__cta-sub">Загрузите первый файл — остальное сделает ADA.</p>
               <div className="landing__cta-actions">
                 <button type="button" className="btn btn--primary btn--lg" onClick={onRegister}>
@@ -414,7 +361,6 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
             <span className="landing__footer-heading">Сервис</span>
             <button type="button" onClick={() => scrollTo("features")}>Возможности</button>
             <button type="button" onClick={() => scrollTo("how")}>Как работает</button>
-            <button type="button" onClick={() => scrollTo("security")}>Безопасность</button>
             <button type="button" onClick={onOpenDocs}>Документация</button>
           </nav>
           <nav className="landing__footer-col">

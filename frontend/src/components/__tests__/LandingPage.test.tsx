@@ -36,12 +36,12 @@ describe("LandingPage", () => {
     expect(screen.getByText("Анализ документов")).toBeTruthy();
     expect(screen.getByText("Редактирование")).toBeTruthy();
     expect(screen.getByText("Генерация документов")).toBeTruthy();
-    expect(screen.getAllByText("Безопасная изоляция").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Мгновенный ответ")).toBeTruthy();
   });
 
   it("renders the final CTA block", () => {
     renderPage();
-    expect(screen.getByText("Ваши документы. Один интеллектуальный помощник.")).toBeTruthy();
+    expect(screen.getByText("Умный поиск в ваших документах за секунды.")).toBeTruthy();
   });
 
   it("Registration button in the navigation starts registration", () => {
