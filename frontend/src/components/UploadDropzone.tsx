@@ -78,7 +78,14 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
       />
       <div className="dropzone__icon">⬆</div>
       <div className="dropzone__title">
-        {busy ? "Загрузка…" : "Перетащите документы сюда"}
+        {busy ? (
+          "Загрузка…"
+        ) : (
+          <>
+            <span className="dropzone__label-desktop">Перетащите документы сюда</span>
+            <span className="dropzone__label-mobile">Загрузить документы</span>
+          </>
+        )}
       </div>
       <div className="dropzone__hint">
         PDF, TXT, DOCX, Markdown или ODT — несколько файлов за раз или нажмите для выбора
