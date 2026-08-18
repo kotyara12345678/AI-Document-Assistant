@@ -37,7 +37,14 @@ from app.schemas.agent import (
     AgentToolResult,
 )
 from app.services import agent_state, gemini
-from app.services.chat import _recent_history, _save_message, resolve_chat
+from app.services.chat import (
+    DEFAULT_CHAT_TITLE,
+    _make_title,
+    _recent_history,
+    _save_message,
+    resolve_chat,
+)
+from app.services.datetime_context import current_datetime_note
 from app.services.deterministic_doc import (
     build_spec_from_task,
     detect_deterministic_document_task,
@@ -491,6 +498,11 @@ class AgentService:
                 context_document_ids=request.context_document_ids,
             )
 
+            # Name the chat after the first question so it never stays "Новый чат".
+            if chat.title == DEFAULT_CHAT_TITLE:
+                chat.title = _make_title(request.question)
+                db.commit()
+
             # --- Explicit (pinned) context: hard override of target resolution
             # When exactly one document is attached and the request is an
             # edit/translate/modify of "this document", the target is already
@@ -551,6 +563,10 @@ class AgentService:
             system_content = SYSTEM_INSTRUCTION
             if context_note:
                 system_content = f"{SYSTEM_INSTRUCTION}\n\n{context_note}"
+            # The model cannot know "today" on its own: inject the real current
+            # date/time so date fields in generated documents are filled with the
+            # actual date instead of a guessed/hallucinated one.
+            system_content = f"{system_content}\n\n{current_datetime_note()}"
             messages: list[dict] = [{"role": "system", "content": system_content}]
             state.setdefault("task", {})["user_request"] = request.question
 
@@ -803,8 +819,18 @@ class AgentService:
 
         if name == "create_document":
             try:
+                from app.services.document_quality import is_template_request
+
+                template_mode = is_template_request(
+                    getattr(request, "question", None) or ""
+                )
                 return json.dumps(
-                    self._create_document(arguments, user_id, chat_id=chat_id),
+                    self._create_document(
+                        arguments,
+                        user_id,
+                        chat_id=chat_id,
+                        template_mode=template_mode,
+                    ),
                     ensure_ascii=False,
                 )
             except Exception:
@@ -1004,13 +1030,27 @@ class AgentService:
         finally:
             db.close()
 
-    def _create_document(self, arguments: dict, user_id: int, *, chat_id: int | None = None) -> dict:
+    def _create_document(
+        self,
+        arguments: dict,
+        user_id: int,
+        *,
+        chat_id: int | None = None,
+        template_mode: bool = False,
+    ) -> dict:
         """Create a document file from the model's structured spec.
 
         The LLM only produces a validated DocumentSpec — never raw DOCX/ODT.
         ``user_id`` always comes from the request context and any user_id in
         the tool arguments is ignored. Every failure path returns a safe,
         structured ``{"success": false, "error": ...}`` object.
+
+        ``template_mode`` marks template requests (``по шаблону``/``по образцу``):
+        they legitimately keep placeholder slots, so unfilled fields are not
+        reported as a quality problem. In normal mode a generated document that
+        still contains critical placeholders is returned *with* a ``warning``
+        and ``placeholders`` list, so the agent warns the user instead of
+        claiming the document is fully ready.
         """
         output_format = str(arguments.get("output_format") or "").strip().lower()
         if output_format not in ("docx", "odt", "pdf", "md", "txt"):
@@ -1081,6 +1121,32 @@ class AgentService:
                 }
 
         from app.services.generation import generate_document
+
+        # --- Validation gate: never render a "finished" document that still
+        # carries critical placeholders. When the user asked for a ready
+        # document, unfilled fields ({{...}}, [дата], [НЕ УКАЗАНО], TODO) mean
+        # the spec is not complete — return a warning instead of silently
+        # producing an unfinished file. Template requests are exempt.
+        from app.services.document_quality import find_placeholders
+        from app.services.document_renderer import spec_to_text
+
+        placeholders = []
+        if not template_mode:
+            placeholders = find_placeholders(spec_to_text(spec))
+
+        if placeholders:
+            return {
+                "success": False,
+                "error_type": "DocumentIncompleteError",
+                "error": (
+                    "the generated document still contains unfilled fields: "
+                    f"{', '.join(placeholders[:8])}. Fill these fields with real "
+                    "values (use the current date, real names/amounts) and retry — "
+                    "or tell the user which fields are missing so they can supply "
+                    "the data."
+                ),
+                "placeholders": placeholders,
+            }
 
         try:
             document = generate_document(

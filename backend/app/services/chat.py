@@ -22,6 +22,7 @@ from app.models.chat_message import ChatMessage, ChatSummary
 from app.models.document import Document
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services import gemini
+from app.services.datetime_context import current_datetime_note
 from app.services.entity_locks import lock_for
 from app.services.retrieval import retrieve_context
 
@@ -102,10 +103,26 @@ def _build_prompt(
     )
 
 
+_TITLE_FILLERS = (
+    "привет",
+    "здравствуйте",
+    "здравствуй",
+    "добрый день",
+    "добрый вечер",
+    "доброе утро",
+)
+
+
 def _make_title(question: str) -> str:
-    """Short one-line title derived from the first question."""
-    title = " ".join(question.strip().split())
-    return title[:TITLE_MAX_LEN] or DEFAULT_CHAT_TITLE
+    """Short one-line title capturing the topic of the first message."""
+    text = " ".join(question.strip().split())
+    lowered = text.lower()
+    for filler in _TITLE_FILLERS:
+        if lowered == filler or lowered.startswith(filler + " "):
+            text = text[len(filler):].strip(" ,.:;!?")
+            break
+    text = text[:TITLE_MAX_LEN]
+    return text or DEFAULT_CHAT_TITLE
 
 
 def _gather_document_metadata(
@@ -393,7 +410,7 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
         try:
             answer = gemini.generate_answer(
                 direct_question,
-                system_instruction=SYSTEM_INSTRUCTION,
+                system_instruction=f"{SYSTEM_INSTRUCTION}\n{current_datetime_note()}",
                 history=history,
                 summary=summary,
             )
@@ -443,7 +460,7 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
     try:
         answer = gemini.generate_answer(
             prompt,
-            system_instruction=SYSTEM_INSTRUCTION,
+            system_instruction=f"{SYSTEM_INSTRUCTION}\n{current_datetime_note()}",
             history=history,
             summary=summary,
         )

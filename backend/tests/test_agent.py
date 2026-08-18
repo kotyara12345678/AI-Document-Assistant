@@ -1334,3 +1334,65 @@ def test_agent_resolves_named_pinned_doc_among_many(client, monkeypatch, user_id
     data = resp.json()
     assert data["tool_calls"][0]["arguments"].get("file_id") == manual_id
 
+
+# ------------------------------------------------- create_document placeholder gate
+
+
+def test_create_document_rejects_critical_placeholders(client, monkeypatch):
+    """A "finished" document that still contains unfilled fields ({{...}},
+    [дата], [подписи], TODO) must NOT be silently created: create_document
+    returns success:false with the offending placeholders listed, so the
+    model asks for the missing data instead of claiming the file is ready."""
+    create_msg = _create_call(
+        {
+            "title": "Договор",
+            "blocks": [
+                {"type": "paragraph", "text": "Дата подписания: [дата]."},
+                {"type": "paragraph", "text": "Сумма: {{SUM}}."},
+            ],
+        }
+    )
+    final_msg = {"content": "Не хватает данных."}
+    _scripted_functions(monkeypatch, [(create_msg, "s"), (final_msg, None)])
+
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай договор"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    result = json.loads(data["tool_results"][0]["content"])
+    assert result["success"] is False
+    assert result["error_type"] == "DocumentIncompleteError"
+    assert "[дата]" in result["error"]
+    assert "{{SUM}}" in result["error"]
+    assert set(result["placeholders"]) == {"[дата]", "{{SUM}}"}
+
+
+def test_create_document_allows_placeholders_for_template_request(client, monkeypatch, user_id):
+    """'по шаблону' requests legitimately keep placeholder slots, so the same
+    spec IS created when the user explicitly asked for a template."""
+    create_msg = _create_call(
+        {
+            "title": "Типовой договор",
+            "blocks": [
+                {"type": "paragraph", "text": "Дата: [дата]."},
+            ],
+        }
+    )
+    final_msg = {"content": "Шаблон готов."}
+    _scripted_functions(monkeypatch, [(create_msg, "s"), (final_msg, None)])
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={"question": "сделай шаблон договора"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    result = json.loads(data["tool_results"][0]["content"])
+    assert result["success"] is True
+    created = _get_document(result["document_id"])
+    assert created is not None
+    assert created.user_id == user_id
+    assert "[дата]" in created.content
+
+
