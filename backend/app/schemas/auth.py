@@ -30,6 +30,22 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=PASSWORD_MAX_LEN)
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LEN)
+    new_password: str = Field(min_length=PASSWORD_MIN_LEN, max_length=PASSWORD_MAX_LEN)
+    password_confirm: str = Field(min_length=PASSWORD_MIN_LEN, max_length=PASSWORD_MAX_LEN)
+
+    @model_validator(mode="after")
+    def passwords_must_match(self) -> "PasswordChangeRequest":
+        if self.new_password != self.password_confirm:
+            raise ValueError("Passwords do not match")
+        if len(self.new_password.encode("utf-8")) > BCRYPT_MAX_BYTES:
+            raise ValueError(
+                f"Password must not exceed {BCRYPT_MAX_BYTES} bytes in UTF-8 encoding"
+            )
+        return self
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

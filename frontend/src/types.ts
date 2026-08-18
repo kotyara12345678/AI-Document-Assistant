@@ -52,6 +52,15 @@ export interface AuthResponse {
   user: UserOut;
 }
 
+export interface MeStats {
+  user: UserOut;
+  documents_total: number;
+  chats_total: number;
+  messages_total: number;
+  tokens_used: number;
+  last_active_at: string | null;
+}
+
 export interface DocumentOut {
   id: number;
   filename: string;

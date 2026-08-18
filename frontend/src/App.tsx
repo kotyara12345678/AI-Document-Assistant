@@ -21,6 +21,7 @@ import {
 import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
 import AdminPanel from "./components/AdminPanel";
+import ProfilePanel from "./components/ProfilePanel";
 import LandingFlow from "./components/LandingFlow";
 import UploadWarning from "./components/UploadWarning";
 import ComparePanel from "./components/ComparePanel";
@@ -94,6 +95,7 @@ export default function App() {
   const [viewerHighlights, setViewerHighlights] = useState<string[]>([]);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   // Compare mode: which document is preselected on the left (null = closed).
   const [compareDocId, setCompareDocId] = useState<number | null>(null);
   // Docs list "⋯" menu: which document's actions menu is open (null = closed).
@@ -150,6 +152,8 @@ export default function App() {
     setActiveChatId(null);
     setError(null);
     setNotice(null);
+    setShowAdmin(false);
+    setShowProfile(false);
     localStorage.removeItem("docsearch-active-chat");
   }, []);
 
@@ -692,21 +696,41 @@ export default function App() {
           </div>
         </div>
 
-        <div className="sidebar__user">
+        <button
+          type="button"
+          className="sidebar__user"
+          onClick={() => {
+            setSidebarOpen(false);
+            setShowAdmin(false);
+            setShowProfile(true);
+          }}
+          title="Личный кабинет"
+        >
           <span className="sidebar__user-avatar">{user.email.slice(0, 1).toUpperCase()}</span>
           <div className="sidebar__user-info">
             <div className="sidebar__user-name" title={user.email}>
               {user.email}
             </div>
             <div className="sidebar__user-meta">
-              {user.role === "admin" ? "Администратор" : "Пользователь"}
+              {user.role === "admin"
+                ? "Администратор"
+                : user.role === "moderator"
+                  ? "Модератор"
+                  : "Пользователь"}
             </div>
           </div>
-        </div>
+        </button>
 
         {user.role === "admin" && (
           <div className="sidebar__section">
-            <button className="btn--admin" onClick={() => { setSidebarOpen(false); setShowAdmin((v) => !v); }}>
+            <button
+              className="btn--admin"
+              onClick={() => {
+                setSidebarOpen(false);
+                setShowProfile(false);
+                setShowAdmin((v) => !v);
+              }}
+            >
               {showAdmin ? "◀ К чату" : "⚙ Админ-панель"}
             </button>
           </div>
@@ -868,7 +892,9 @@ export default function App() {
         aria-hidden="true"
       />
 
-      {showAdmin ? (
+      {showProfile ? (
+        <ProfilePanel user={user} onBack={() => setShowProfile(false)} onDeleted={logout} />
+      ) : showAdmin ? (
         <AdminPanel onBack={() => setShowAdmin(false)} currentUserId={user.id} />
       ) : (
         <main className="chat">

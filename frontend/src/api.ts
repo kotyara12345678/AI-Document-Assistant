@@ -13,6 +13,7 @@ import type {
   CreatedDocument,
   DocumentContent,
   DocumentOut,
+  MeStats,
   MessageOut,
   SourceRef,
   UserOut,
@@ -83,6 +84,33 @@ export async function login(email: string, password: string): Promise<AuthRespon
 export async function fetchMe(): Promise<UserOut> {
   const res = await fetch(`${BASE}/auth/me`, { headers: authHeaders() });
   return handle<UserOut>(res);
+}
+
+export async function fetchMeStats(): Promise<MeStats> {
+  const res = await fetch(`${BASE}/me/stats`, { headers: authHeaders() });
+  return handle<MeStats>(res);
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  passwordConfirm: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      password_confirm: passwordConfirm,
+    }),
+  });
+  await handle<{ changed: boolean }>(res);
+}
+
+export async function deleteMe(): Promise<void> {
+  const res = await fetch(`${BASE}/me`, { method: "DELETE", headers: authHeaders() });
+  await handle<{ deleted: boolean }>(res);
 }
 
 export async function fetchDocuments(): Promise<DocumentOut[]> {

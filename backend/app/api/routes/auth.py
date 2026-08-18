@@ -20,7 +20,13 @@ from app.core.security import (
 )
 from app.database.session import get_db
 from app.models.user import User
-from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, UserOut
+from app.schemas.auth import (
+    AuthResponse,
+    LoginRequest,
+    PasswordChangeRequest,
+    RegisterRequest,
+    UserOut,
+)
 
 router = APIRouter()
 
@@ -134,3 +140,21 @@ def me(
     """Return the currently authenticated user."""
     user = db.get(User, user_id)
     return UserOut.model_validate(user)
+
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+def change_password(
+    payload: PasswordChangeRequest,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Replace the current password after verifying it (keeps the session)."""
+    user = db.get(User, user_id)
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"changed": True}

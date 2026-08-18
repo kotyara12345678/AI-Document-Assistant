@@ -15,6 +15,7 @@ from app.api.routes import (
     chats,
     documents,
     health,
+    me,
     ready,
     reports,
     search,
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_users.router, prefix=f"{settings.API_PREFIX}/admin", tags=["admin"])
     app.include_router(reports.router, prefix=f"{settings.API_PREFIX}/reports", tags=["reports"])
     app.include_router(agent.router, prefix=f"{settings.API_PREFIX}/agent", tags=["agent"])
+    app.include_router(me.router, prefix=f"{settings.API_PREFIX}/me", tags=["me"])
 
     @app.middleware("http")
     async def _metrics_middleware(request, call_next):
