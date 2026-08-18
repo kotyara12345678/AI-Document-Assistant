@@ -1396,3 +1396,68 @@ def test_create_document_allows_placeholders_for_template_request(client, monkey
     assert "[дата]" in created.content
 
 
+def test_search_self_corrects_zero_hit_query(client, monkeypatch, user_id):
+    """When the model's search query returns nothing, the agent rewrites it
+    (strip pleading verbs, drop function words) and searches again instead of
+    answering 'not found'. The recovered hit is labelled reformulated_query."""
+    from app.models.document import Document
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        doc = Document(
+            user_id=user_id,
+            filename="salary.txt",
+            original_filename="salary.txt",
+            file_type="txt",
+            file_size=64,
+            filepath="/data/uploads/salary.txt",
+            content="зарплата Сергея Юрьевича — 180000 рублей",
+        )
+        db.add(doc)
+        db.commit()
+        doc_id = doc.id
+    finally:
+        db.close()
+
+    class _Src:
+        document_id = doc_id
+        filename = "salary.txt"
+        score = 0.9
+        text = "зарплата Сергея Юрьевича — 180000 рублей"
+
+    class _Chunk:
+        source = _Src()
+
+    original = "найди мне данные про зарплату Сергея"
+    rewritten = "данные про зарплату сергея"  # stripped of 'найди мне'
+
+    def fake_retrieve(**kwargs):
+        question = (kwargs.get("question") or "").lower()
+        if question == original.lower():
+            return []
+        if question == rewritten:
+            return [_Chunk()]
+        return []
+
+    monkeypatch.setattr("app.services.agent.retrieve_context", fake_retrieve)
+
+    tool_msg = _tool_call_message("search_documents", {"query": original})
+    final_msg = {"content": "Зарплата Сергея Юрьевича — 180000 рублей."}
+    _scripted_functions(monkeypatch, [(tool_msg, "s"), (final_msg, None)])
+
+    resp = client.post(
+        f"{API_PREFIX}/agent", json={"question": f"какая зарплата у {doc_id}"}
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    result = json.loads(data["tool_results"][0]["content"])
+    assert result, "the reformulated search must recover a hit"
+    hit = result[0]
+    assert hit["document_id"] == doc_id
+    assert hit["filename"] == "salary.txt"
+    assert hit["reformulated_query"] == rewritten
+    assert "180000" in hit["snippet"]
+
+

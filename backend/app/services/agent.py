@@ -1529,6 +1529,13 @@ class AgentService:
         The result is one entry per matched document: id, file name, relevance
         score and a short excerpt of the best-matching fragment. Duplicates
         across chunks of the same document are collapsed to the best hit.
+
+        Self-correction: when the query yields no hits, a few deterministic
+        reformulations (strip pleading verbs, drop function words, single
+        content tokens) are tried automatically instead of reporting "not
+        found". A hit produced by a reformulated query is labelled with the
+        ``reformulated_query`` it actually matched, so the model and the user
+        see why the search still succeeded.
         """
         chunks = retrieve_context(
             question=query,
@@ -1536,6 +1543,28 @@ class AgentService:
             document_id=document_ids,
             top_k=settings.AGENT_TOP_K,
         )
+
+        # --- Self-correction: zero hits -> try rewritten variants ----------
+        # Each hit produced by a reformulated query is labelled with the
+        # variant it actually matched, so the model/user see the mapping.
+        matched_variant: str | None = None
+        if not chunks:
+            from app.services.query_reformulation import reformulate_query
+
+            for variant in reformulate_query(query):
+                candidate = retrieve_context(
+                    question=variant,
+                    user_id=user_id,
+                    document_id=document_ids,
+                    top_k=settings.AGENT_TOP_K,
+                )
+                if not candidate:
+                    continue
+                # First variant that finds anything wins: it is the closest to
+                # the user's original wording.
+                chunks = candidate
+                matched_variant = variant
+                break
 
         hits: list[dict] = []
         seen: set[int] = set()
@@ -1579,6 +1608,8 @@ class AgentService:
                 "score": round(chunk.source.score, 4),
                 "snippet": chunk.source.text[:SNIPPET_MAX_CHARS],
             }
+            if matched_variant is not None:
+                hit["reformulated_query"] = matched_variant
             if doc is not None:
                 hit["type"] = doc.file_type
                 hit["file_size"] = doc.file_size
