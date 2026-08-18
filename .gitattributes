@@ -1,0 +1,9 @@
+# Keep POSIX shell scripts with LF line endings on every platform.
+# CRLF in a shebang (`#!/bin/sh\r`) breaks exec inside Linux containers.
+*.sh text eol=lf
+*.sh.sample text eol=lf
+
+# Never store generated/volatile files.
+.vscode/
+.idea/
+*.log
