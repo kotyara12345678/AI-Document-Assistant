@@ -412,3 +412,58 @@ def test_honest_failure_prose_is_not_rewritten(client, monkeypatch, user_id):
     data = resp.json()
 
     assert data["answer"] == honest_text
+
+
+def test_sanitized_answer_mentions_empty_search_not_skipped_tools(
+    client, monkeypatch, user_id
+):
+    """REGRESSION from a real run: the model searched for the project, got no
+    hits, but then claimed in prose that a PDF report was created. The honest
+    replacement must say the SEARCH found nothing — never that the tools were
+    skipped (they were not)."""
+    search_msg = _tool_call_message(
+        "search_documents", {"query": "проект УралТехноСтрой"}
+    )
+    _scripted_functions(
+        monkeypatch,
+        [
+            (search_msg, "s"),  # real search runs, returns [] (no hits)
+            (
+                {
+                    "content": (
+                        "Ваш PDF-отчёт по проекту «УралТехноСтрой» создан и "
+                        "доступен для скачивания."
+                    )
+                },
+                None,
+            ),
+        ],
+    )
+
+    resp = client.post(
+        f"{API_PREFIX}/agent",
+        json={
+            "question": (
+                "Создай в формате PDF подробный отчёт по проекту "
+                "«УралТехноСтрой» на основе информации из моих документов."
+            )
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    # Search DID run and returned nothing real.
+    assert [c["name"] for c in data["tool_calls"]] == ["search_documents"]
+    search_result = json.loads(data["tool_results"][0]["content"])
+    assert search_result == []
+
+    # The sanitized answer reflects the real situation: search done, no data.
+    answer = data["answer"]
+    assert "не нашёл" in answer
+    assert "УралТехноСтрой" in answer
+    # It must NOT claim the tools were skipped.
+    assert "инструменты" not in answer.lower()
+    # And it must not claim a file was created / offer a download.
+    assert data["created_documents"] == []
+    assert "скачивания" not in answer.lower()
+    assert "файл не создан" in answer.lower()

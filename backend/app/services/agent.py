@@ -722,7 +722,7 @@ class AgentService:
 
             # ANTI-FABRICATION: never let the model's prose claim a created
             # file or a download link that no real tool result backs up.
-            answer = _sanitize_final_answer(answer, results)
+            answer = _sanitize_final_answer(answer, results, request.question)
 
             assistant_msg = _save_message(db, user_id, chat_id, "assistant", answer)
             # Persist task/document state so the next turn (or a restart) resumes.
@@ -1931,8 +1931,16 @@ def _looks_like_success_claim(text: str) -> bool:
     return any(word in low for word in _SUCCESS_CLAIMS)
 
 
-def _honest_creation_failure(results: list[AgentToolResult]) -> str:
-    """An honest final answer when no file was really created this turn."""
+def _honest_creation_failure(
+    results: list[AgentToolResult], question: str = ""
+) -> str:
+    """An honest final answer when no file was really created this turn.
+
+    Prefers the real tool error when create/edit actually ran and failed. When
+    no create/edit ran but a search did and found nothing relevant, say so —
+    the user's document set simply has no data for the request, and the honest
+    answer must reflect that instead of blaming a tool that was never called.
+    """
     for result in reversed(results):
         if result.name not in ("create_document", "edit_document"):
             continue
@@ -1948,14 +1956,44 @@ def _honest_creation_failure(results: list[AgentToolResult]) -> str:
                 + ". Я не выдумываю данные — укажите недостающие сведения, "
                 "и я подготовлю документ."
             )
+
+    # A search ran but returned nothing: tell the user the document set lacks
+    # the data, never hint that the tools were skipped.
+    for result in reversed(results):
+        if result.name != "search_documents":
+            continue
+        try:
+            hits = json.loads(result.content)
+        except ValueError:
+            continue
+        if isinstance(hits, list) and not hits:
+            topic = ""
+            if question:
+                topic = (
+                    f' по запросу «{question.strip()[:120]}»'
+                    if len(question.strip()) <= 120
+                    else ""
+                )
+            return (
+                "Я поискал в ваших документах"
+                + topic
+                + ", но нужных данных не нашёл. Файл не создан: "
+                "недостающие сведения не выдумываются. Укажите участников, "
+                "задачи, сроки, ответственных, финансовые показатели и "
+                "текущий статус — или загрузите документы проекта, и я "
+                "подготовлю PDF-отчёт."
+            )
+
     return (
-        "Файл не был создан: инструменты создания не вызывались, а нужные "
-        "данные не были получены. Недостающие сведения не выдумываются — "
-        "укажите их, и я подготовлю документ."
+        "Файл не был создан: данных для подготовки документа не хватает. "
+        "Недостающие сведения не выдумываются — укажите их, и я подготовлю "
+        "документ."
     )
 
 
-def _sanitize_final_answer(answer: str, results: list[AgentToolResult]) -> str:
+def _sanitize_final_answer(
+    answer: str, results: list[AgentToolResult], question: str = ""
+) -> str:
     """Anti-fabrication guard for the model's free-text final answer.
 
     The structured fields (tool_calls / tool_results / sources /
@@ -1979,7 +2017,7 @@ def _sanitize_final_answer(answer: str, results: list[AgentToolResult]) -> str:
         # A real file exists this turn; keep the model's prose otherwise.
         return sanitized
     if _looks_like_success_claim(sanitized):
-        return _honest_creation_failure(results)
+        return _honest_creation_failure(results, question)
     return sanitized
 
 
