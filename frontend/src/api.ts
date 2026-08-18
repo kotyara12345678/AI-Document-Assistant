@@ -241,6 +241,15 @@ export async function deleteChat(id: number): Promise<void> {
   await handle<{ deleted: number; status: string }>(res);
 }
 
+export async function renameChat(id: number, title: string): Promise<ChatOut> {
+  const res = await fetch(`${BASE}/chats/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ title }),
+  });
+  return handle<ChatOut>(res);
+}
+
 export async function fetchChatMessages(id: number): Promise<MessageOut[]> {
   const res = await fetch(`${BASE}/chats/${id}/messages`, { headers: authHeaders() });
   return handle<MessageOut[]>(res);

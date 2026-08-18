@@ -5,7 +5,7 @@ from app.core.security import get_current_user_id
 from app.database.session import get_db
 from app.models.chat import Chat
 from app.models.chat_message import ChatMessage
-from app.schemas.chat import ChatCreate, ChatOut, MessageOut
+from app.schemas.chat import ChatCreate, ChatOut, ChatUpdate, MessageOut
 from app.services.chat import DEFAULT_CHAT_TITLE
 
 router = APIRouter()
@@ -63,6 +63,20 @@ def chat_messages(
         .order_by(ChatMessage.id.asc())
         .all()
     )
+
+
+@router.patch("/{chat_id}", response_model=ChatOut)
+def rename_chat(
+    chat_id: int,
+    payload: ChatUpdate,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Chat:
+    chat = _get_chat(db, chat_id, user_id)
+    chat.title = payload.title.strip() or DEFAULT_CHAT_TITLE
+    db.commit()
+    db.refresh(chat)
+    return chat
 
 
 @router.delete("/{chat_id}", status_code=status.HTTP_200_OK)

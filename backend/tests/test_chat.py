@@ -294,6 +294,37 @@ def test_chats_crud_and_autotitle(client, fake_gemini):
     assert client.get(f"{API_PREFIX}/chats/{chat_id}/messages").status_code == 404
 
 
+def test_chat_rename(client, register_user):
+    """PATCH /chats/{id} renames the chat and updates its title."""
+    created = client.post(f"{API_PREFIX}/chats", json={"title": "Старое имя"})
+    assert created.status_code == 201, created.text
+    chat_id = created.json()["id"]
+
+    renamed = client.patch(f"{API_PREFIX}/chats/{chat_id}", json={"title": "Новое имя"})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["id"] == chat_id
+    assert renamed.json()["title"] == "Новое имя"
+
+    listed = client.get(f"{API_PREFIX}/chats").json()
+    target = next(c for c in listed if c["id"] == chat_id)
+    assert target["title"] == "Новое имя"
+
+    # Whitespace-only title falls back to the default chat title.
+    blank = client.patch(f"{API_PREFIX}/chats/{chat_id}", json={"title": "   "})
+    assert blank.status_code == 200
+    assert blank.json()["title"] == "Новый чат"
+
+    # Renaming someone else's chat is forbidden.
+    other_info = register_user(client)
+    other_token = other_info["token"]
+    forbidden = client.patch(
+        f"{API_PREFIX}/chats/{chat_id}",
+        json={"title": "Хак"},
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert forbidden.status_code == 404
+
+
 def test_chat_history_scoped_to_chat(client, fake_gemini):
     """Messages in one chat never leak into another chat's history."""
     marker = f"SCOP{uuid.uuid4().hex[:6]}"

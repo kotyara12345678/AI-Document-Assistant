@@ -13,6 +13,7 @@ import {
   fetchDocuments,
   fetchMe,
   getToken,
+  renameChat,
   setToken,
   streamAgent,
   uploadDocuments,
@@ -97,6 +98,8 @@ export default function App() {
   const [compareDocId, setCompareDocId] = useState<number | null>(null);
   // Docs list "⋯" menu: which document's actions menu is open (null = closed).
   const [docMenuFor, setDocMenuFor] = useState<number | null>(null);
+  // Chats list "⋯" menu: which chat's actions menu is open (null = closed).
+  const [chatMenuFor, setChatMenuFor] = useState<number | null>(null);
   // Mobile-only drawer (left panel becomes a tab opened via the top-right button).
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Documents the user has pinned as context for the next message (UI chips).
@@ -396,6 +399,24 @@ export default function App() {
       }
     },
     [chats, activeChatId, selectChat]
+  );
+
+  const renameChatNow = useCallback(
+    async (chat: ChatOut) => {
+      setChatMenuFor(null);
+      const next = window.prompt("Название чата:", chat.title);
+      if (next === null) return;
+      const title = next.trim();
+      if (!title || title === chat.title) return;
+      try {
+        const updated = await renameChat(chat.id, title);
+        setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+        flashNotice("Чат переименован.");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Не удалось переименовать чат");
+      }
+    },
+    [flashNotice]
   );
 
   const openDocument = useCallback(async (id: number, highlights: string[] = []) => {
@@ -707,16 +728,45 @@ export default function App() {
                 className={`chat-item ${activeChatId === chat.id ? "chat-item--active" : ""}`}
                 onClick={() => void selectChat(chat.id)}
               >
-                <button
-                  className="chat-item__delete"
-                  title="Удалить чат"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void removeChat(chat.id);
-                  }}
-                >
-                  ✕
-                </button>
+                <div className="chat-item__actions">
+                  {chatMenuFor === chat.id && (
+                    <div className="doc-menu-backdrop" onClick={() => setChatMenuFor(null)} />
+                  )}
+                  <button
+                    className="chat-item__menu"
+                    title="Действия с чатом"
+                    aria-label="Действия с чатом"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setChatMenuFor((cur) => (cur === chat.id ? null : chat.id));
+                    }}
+                  >
+                    ⋮
+                  </button>
+                  {chatMenuFor === chat.id && (
+                    <div className="doc-menu">
+                      <button
+                        className="doc-menu__item"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void renameChatNow(chat);
+                        }}
+                      >
+                        Переименовать
+                      </button>
+                      <button
+                        className="doc-menu__item doc-menu__item--danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setChatMenuFor(null);
+                          void removeChat(chat.id);
+                        }}
+                      >
+                        Удалить чат
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <span className="chat-item__title">{chat.title}</span>
                 <span className="chat-item__meta">{new Date(chat.updated_at).toLocaleDateString()}</span>
               </div>
