@@ -7,8 +7,13 @@ from sqlalchemy.orm import Session
 from app.core.security import get_current_user_id
 from app.database.session import get_db
 from app.models.document import Document
-from app.schemas.document import DocumentOut
+from app.schemas.document import (
+    CompareRequest,
+    CompareResponse,
+    DocumentOut,
+)
 from app.services import documents as document_service
+from app.services import document_compare as compare_service
 from app.services import indexing as indexing_service
 
 router = APIRouter()
@@ -69,6 +74,44 @@ def index_document(
         "status": "ok",
     }
 
+
+@router.post("/compare", response_model=CompareResponse)
+def compare_documents(
+    payload: CompareRequest,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> CompareResponse:
+    """Compare any two documents of the user (or two versions of one file).
+
+    Returns a bounded, side-by-side-ready diff: line arrays, per-range
+    operations (equal/delete/insert/replace), a summary of added/removed/
+    changed/unchanged lines, and whether the two documents are identical.
+    """
+    result = compare_service.compare_documents(
+        left_id=payload.left_id,
+        right_id=payload.right_id,
+        user_id=user_id,
+        db=db,
+    )
+    return CompareResponse.model_validate(result)
+
+
+@router.get("/{document_id}/versions", response_model=list[DocumentOut])
+def list_document_versions(
+    document_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> list[DocumentOut]:
+    """List the version chain of a document, oldest (root) first.
+
+    Versions are the documents linked via ``source_file_id``: the original
+    upload plus every edited copy derived from it. A plain upload returns a
+    single version.
+    """
+    versions = compare_service.document_versions(
+        document_id=document_id, user_id=user_id, db=db
+    )
+    return [DocumentOut.model_validate(v) for v in versions]
 
 @router.delete("", status_code=status.HTTP_200_OK)
 def delete_all_documents(

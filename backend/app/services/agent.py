@@ -29,6 +29,8 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from fastapi import HTTPException
+
 from app.core.config import settings
 from app.schemas.agent import (
     AgentRequest,
@@ -185,6 +187,14 @@ SYSTEM_INSTRUCTION = (
     "Metadata: when you answer, use the metadata the tools return (file name, "
     "type, dates, sizes) and never invent metadata; mention it only when it "
     "directly helps the answer. "
+    "COMPARE: when the user asks to compare documents, versions, or to see "
+    "what changed ('сравни два документа', 'в чём разница между этими "
+    "файлами', 'что изменилось после редактирования', 'покажи отличия'), "
+    "you MUST call compare_documents with the document_id of each file. "
+    "Resolve the ids with list_documents / search_documents / read_document "
+    "if the user only names the files; never invent a document_id. Describe "
+    "the differences ONLY from the tool result — never fabricate added, "
+    "removed or changed content that the tool did not return."
     "EDITING EXISTING FILES: when the user wants to CHANGE an existing uploaded "
     "file ('сделай этот документ понятнее', 'перепиши коротким русским языком', "
     "'удали упоминания X из этого файла', 'переведи этот документ'), you MUST "
@@ -437,6 +447,44 @@ EDIT_FUNCTION = {
 }
 
 
+COMPARE_FUNCTION = {
+    "name": "compare_documents",
+    "description": (
+        "Compare two of the user's documents and describe what changed. Use "
+        "this whenever the user asks to compare documents or versions, find "
+        "differences, or see what was changed in an edited file — e.g. "
+        "'сравни два документа', 'в чём разница между этими файлами', "
+        "'что изменилось после редактирования', 'покажи отличия версий'. "
+        "Pass the exact document_id of each file (resolve them with "
+        "list_documents / search_documents / read_document if the user only "
+        "names the files). Returns the file names, an equal flag, a summary of "
+        "added/removed/changed/unchanged lines, and a few changed blocks. "
+        "Answer the user in their language based ONLY on what the tool "
+        "returns — never invent differences that are not in the result."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "left_id": {
+                "type": "integer",
+                "description": (
+                    "document_id of the first document to compare (from "
+                    "list_documents / search_documents results)."
+                ),
+            },
+            "right_id": {
+                "type": "integer",
+                "description": (
+                    "document_id of the second document to compare (from "
+                    "list_documents / search_documents results)."
+                ),
+            },
+        },
+        "required": ["left_id", "right_id"],
+    },
+}
+
+
 class AgentService:
     """Owns the tool registry and runs the minimal agent loop."""
 
@@ -447,6 +495,7 @@ class AgentService:
             LIST_FUNCTION,
             CREATE_FUNCTION,
             EDIT_FUNCTION,
+            COMPARE_FUNCTION,
         ]
 
     def run_agent(
@@ -774,6 +823,8 @@ class AgentService:
             return "Получение списка документов"
         if name == "create_document":
             return f"Создание документа ({a.get('output_format', 'docx')})"
+        if name == "compare_documents":
+            return f"Сравнение документов #{a.get('left_id')} и #{a.get('right_id')}"
         return f"Действие: {name}"
 
     def _update_state_from_tool(
@@ -826,6 +877,15 @@ class AgentService:
                 agent_state.remember_document(
                     state, data["document_id"], data.get("filename", ""),
                     doc_type=data.get("file_type"), read=False,
+                )
+        elif name == "compare_documents" and isinstance(data, dict):
+            state.setdefault("task", {})["comparison_done"] = True
+            for ref in (data.get("left"), data.get("right")):
+                if not isinstance(ref, dict) or not ref.get("id"):
+                    continue
+                agent_state.remember_document(
+                    state, ref["id"], ref.get("original_filename", ""),
+                    doc_type=ref.get("file_type"), read=True,
                 )
 
     def _execute_tool(
@@ -951,6 +1011,18 @@ class AgentService:
                     {"error": f"list failed: {exc}"}, ensure_ascii=False
                 )
 
+        if name == "compare_documents":
+            try:
+                return json.dumps(
+                    self._compare_documents(arguments, user_id, db=db),
+                    ensure_ascii=False,
+                )
+            except Exception as exc:
+                logger.exception("Agent tool compare_documents failed")
+                return json.dumps(
+                    {"error": f"compare failed: {exc}"}, ensure_ascii=False
+                )
+
         if name != "search_documents":
             return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
 
@@ -1063,6 +1135,49 @@ class AgentService:
             ]
         finally:
             db.close()
+
+    def _compare_documents(
+        self,
+        arguments: dict,
+        user_id: int,
+        *,
+        db: Session | None = None,
+    ) -> dict:
+        """Compare two of the user's documents and return a compact summary.
+
+        Ownership is enforced by the service itself (``Document.user_id ==
+        user``), so ids pointing at another user's document produce the same
+        safe ``error`` result and never leak whether a document exists. The
+        model receives only the bounded ``model_summary`` payload — never the
+        full document text.
+        """
+        try:
+            left_id = int(arguments.get("left_id"))
+            right_id = int(arguments.get("right_id"))
+        except (TypeError, ValueError):
+            return {
+                "error": "compare_documents requires numeric left_id and right_id"
+            }
+
+        from app.services import document_compare as compare_service
+
+        own_db = False
+        if db is None:
+            from app.database.session import SessionLocal
+
+            db = SessionLocal()
+            own_db = True
+        try:
+            try:
+                result = compare_service.compare_documents(
+                    left_id=left_id, right_id=right_id, user_id=user_id, db=db
+                )
+            except HTTPException as exc:
+                return {"error": exc.detail}
+            return compare_service.model_summary(result)
+        finally:
+            if own_db:
+                db.close()
 
     def _create_document(
         self,
