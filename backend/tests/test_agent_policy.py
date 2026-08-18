@@ -133,6 +133,24 @@ class TestSystemInstructionPolicy:
         assert "never substitute writing the document in the chat" in text
         assert "put the entire document into" in text
 
+    def test_confirmation_must_cite_real_tool_result(self):
+        # CONFIRMATION QUALITY: after create/edit the reply must be based on the
+        # actual tool result, never on invented file names or formats.
+        text = SYSTEM_INSTRUCTION.lower()
+        assert "confirmation quality" in text
+        assert "based on the tool result" in text
+        assert "real file name" in text
+        assert "never invent a file name" in text
+        assert "cannot provide" in text
+
+    def test_edit_confirmation_states_original_unchanged(self):
+        # After edit_document the model must say a NEW file was created and the
+        # original document is unchanged.
+        text = SYSTEM_INSTRUCTION.lower()
+        assert "a new file was created" in text
+        assert "original document is" in text
+        assert "не измен" in text
+
 
 # ---------------------------------------------------------------------------
 # Behavioural tests (real retrieval + mocked LLM).

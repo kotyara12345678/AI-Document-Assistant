@@ -219,6 +219,18 @@ SYSTEM_INSTRUCTION = (
     "send only a 'title' without 'content', the saved file will contain no "
     "content. For ordinary (non-document) answers, use plain text and never "
     "wrap them in a code block. "
+    "CONFIRMATION QUALITY: after create_document succeeds, your one-line "
+    "confirmation MUST be based on the tool result, not on your own guess: "
+    "cite the REAL file name and format it returned (e.g. 'Документ "
+    "«Трудовой договор.docx» создан в формате DOCX и сохранён в вашей "
+    "библиотеке.'). Never invent a file name, format or size that the tool "
+    "did not return; never claim a download link you cannot provide. After "
+    "edit_document succeeds, say that a NEW file was created, name it and its "
+    "format from the result, and state that the original document is "
+    "unchanged (e.g. 'Создан новый файл «…» — исходный документ не "
+    "изменён.'). If the tool result contains errors or unfilled placeholders, "
+    "do not claim success: summarize exactly what is missing and ask the "
+    "user for it. "
 )
 
 # Short excerpt handed back to the model per matched document.
@@ -689,6 +701,14 @@ class AgentService:
                 # Honest degradation: never surface a crash when the model is down.
                 logger.exception("GigaChat failed during the agent loop")
                 answer = "[GigaChat unavailable] Please try again later."
+
+            # CONFIRMATION QUALITY fallback: if the model returned an empty
+            # final answer but a document was actually created/edited, surface a
+            # factual confirmation from the tool result instead of an empty box.
+            if not answer.strip():
+                factual = _derive_tool_confirmation(results)
+                if factual:
+                    answer = factual
 
             assistant_msg = _save_message(db, user_id, chat_id, "assistant", answer)
             # Persist task/document state so the next turn (or a restart) resumes.
@@ -1179,6 +1199,14 @@ class AgentService:
             "filename": document.original_filename,
             "file_type": document.file_type,
             "file_size": document.file_size,
+            "download_url": f"{settings.API_PREFIX}/documents/{document.id}/file",
+            # Factual, ready-to-cite confirmation: the model must echo this
+            # data (real file name, format) instead of inventing a summary.
+            "confirmation": (
+                f"Документ «{document.original_filename}» создан "
+                f"в формате {document.file_type.upper()} и сохранён в вашей "
+                "библиотеке — его можно скачать."
+            ),
         }
 
     def _edit_document(
@@ -1215,7 +1243,7 @@ class AgentService:
         from app.services.document_edit import edit_document
 
         try:
-            return edit_document(file_id, instruction, user_id, db, chat_id=chat_id)
+            result = edit_document(file_id, instruction, user_id, db, chat_id=chat_id)
         except DocumentEditError as exc:
             logger.exception("Agent tool edit_document failed (typed error)")
             return {
@@ -1230,6 +1258,17 @@ class AgentService:
                 "error_type": "DocumentEditError",
                 "error": f"failed to edit the document: {exc}",
             }
+
+        # Factual confirmation the model must cite: a NEW file was created and
+        # the original document is untouched.
+        return {
+            **result,
+            "download_url": f"{settings.API_PREFIX}/documents/{result['document_id']}/file",
+            "confirmation": (
+                f"Создан новый файл «{result['filename']}» "
+                f"(формат {result['file_type'].upper()}). Исходный документ не изменён."
+            ),
+        }
 
     def _run_deterministic(
         self,
@@ -1796,6 +1835,29 @@ def _derive_sources(results: list[AgentToolResult]) -> list[dict]:
                 }
             )
     return sources
+
+
+def _derive_tool_confirmation(results: list[AgentToolResult]) -> str:
+    """Factual confirmation string for the most recent create/edit tool result.
+
+    Reads the ``confirmation`` key the tools return (real file name, format,
+    download url / original-unchanged note) so a model that answers with an
+    empty or unusable message still leaves the user with a correct summary.
+    Returns "" when no successful create/edit result carries a confirmation.
+    """
+    for result in reversed(results):
+        if result.name not in ("create_document", "edit_document"):
+            continue
+        try:
+            payload = json.loads(result.content)
+        except ValueError:
+            continue
+        if not payload.get("success"):
+            continue
+        confirmation = str(payload.get("confirmation") or "").strip()
+        if confirmation:
+            return confirmation
+    return ""
 
 
 def _derive_created_documents(results: list[AgentToolResult]) -> list[dict]:

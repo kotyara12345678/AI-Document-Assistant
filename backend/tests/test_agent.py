@@ -569,6 +569,14 @@ def test_agent_calls_create_document(client, monkeypatch, user_id):
     assert result["file_type"] == "docx"
     assert result["filename"].endswith(".docx")
 
+    # CONFIRMATION QUALITY: the tool result carries factual confirmation data
+    # (real file name, format, download url) the model must cite verbatim.
+    assert result["download_url"].startswith(f"{API_PREFIX}/documents/")
+    assert result["confirmation"]
+    assert "Документ" in result["confirmation"]
+    assert result["filename"] in result["confirmation"]
+    assert "DOCX" in result["confirmation"]
+
     doc = _get_document(result["document_id"])
     assert doc is not None
     assert doc.user_id == user_id
@@ -1270,6 +1278,13 @@ def test_agent_uses_pinned_pdf_context_for_edit(client, monkeypatch, user_id):
     # Original on disk is untouched.
     assert pdf_path.read_bytes() == original
 
+    # CONFIRMATION QUALITY: the edit result cites the NEW file and states the
+    # original is unchanged, with a real download url.
+    assert result["download_url"].startswith(f"{API_PREFIX}/documents/")
+    assert result["confirmation"]
+    assert result["filename"] in result["confirmation"]
+    assert "не изменён" in result["confirmation"].lower()
+
 
 def test_agent_ignores_unpinned_docs_when_one_pinned(client, monkeypatch, user_id):
     """A pinned PDF must be edited directly; an unrelated library doc (Savvaland)
@@ -1459,5 +1474,30 @@ def test_search_self_corrects_zero_hit_query(client, monkeypatch, user_id):
     assert hit["filename"] == "salary.txt"
     assert hit["reformulated_query"] == rewritten
     assert "180000" in hit["snippet"]
+
+
+def test_empty_final_answer_falls_back_to_confirmation(client, monkeypatch, user_id):
+    """CONFIRMATION QUALITY: if the model creates a document but returns an
+    empty final answer, the backend replies with the factual confirmation from
+    the tool result instead of an empty box."""
+    create_msg = _create_call(
+        {
+            "title": "Трудовой договор",
+            "blocks": [{"type": "paragraph", "text": "Стороны заключили договор."}],
+        }
+    )
+    final_msg = {"content": ""}  # model silently returns nothing
+    _scripted_functions(monkeypatch, [(create_msg, "s"), (final_msg, None)])
+
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "создай договор"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    result = json.loads(data["tool_results"][0]["content"])
+    assert result["success"] is True
+    # The answer is the factual confirmation (real filename + format).
+    assert data["answer"]
+    assert result["filename"] in data["answer"]
+    assert "DOCX" in data["answer"]
 
 
