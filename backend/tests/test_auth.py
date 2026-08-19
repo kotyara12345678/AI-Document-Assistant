@@ -201,7 +201,7 @@ def test_chat_retrieval_and_sources_are_scoped(client, register_user, monkeypatc
 
     calls = []
 
-    def fake(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         calls.append(prompt)
         return "Ответ владельцу."
 
@@ -246,3 +246,108 @@ def test_chats_are_isolated_between_users(client):
 
     assert client.get(f"{API_PREFIX}/chats/{chat_id}/messages", headers=b_headers).status_code == 404
     assert client.delete(f"{API_PREFIX}/chats/{chat_id}", headers=b_headers).status_code == 404
+
+
+# --- profile cabinet: password change, avatar, usage stats ---
+
+
+def test_change_password_requires_current_password(client):
+    """A wrong current password must be rejected before anything changes."""
+    resp = client.patch(
+        f"{API_PREFIX}/auth/me/password",
+        json={
+            "current_password": "wrong-pass-000",
+            "new_password": "brand-new-pass-1",
+            "new_password_confirm": "brand-new-pass-1",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+
+    # The old password still works after the rejected attempt.
+    ok = client.post(f"{API_PREFIX}/auth/login", json={"email": _current_email(client), "password": PWD})
+    assert ok.status_code == 200, ok.text
+
+
+def test_change_password_updates_credentials(client):
+    new_pwd = "fresh-pass-456"
+    resp = client.patch(
+        f"{API_PREFIX}/auth/me/password",
+        json={
+            "current_password": PWD,
+            "new_password": new_pwd,
+            "new_password_confirm": new_pwd,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Old password no longer works; the new one does.
+    old = client.post(f"{API_PREFIX}/auth/login", json={"email": _current_email(client), "password": PWD})
+    assert old.status_code == 401, old.text
+    fresh = client.post(
+        f"{API_PREFIX}/auth/login",
+        json={"email": _current_email(client), "password": new_pwd},
+    )
+    assert fresh.status_code == 200, fresh.text
+
+
+def test_change_password_mismatched_confirmation_rejected(client):
+    resp = client.patch(
+        f"{API_PREFIX}/auth/me/password",
+        json={
+            "current_password": PWD,
+            "new_password": "brand-new-pass-2",
+            "new_password_confirm": "different-pass-2",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_update_avatar_sets_and_clears(client):
+    data_url = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+    set_resp = client.patch(f"{API_PREFIX}/auth/me", json={"avatar_url": data_url})
+    assert set_resp.status_code == 200, set_resp.text
+    assert set_resp.json()["avatar_url"] == data_url
+
+    me = client.get(f"{API_PREFIX}/auth/me").json()
+    assert me["avatar_url"] == data_url
+
+    # Non-data-image URLs are rejected (only raster data URLs are allowed).
+    bad = client.patch(f"{API_PREFIX}/auth/me", json={"avatar_url": "https://x/y.png"})
+    assert bad.status_code == 422, bad.text
+
+    # null clears the avatar.
+    clear_resp = client.patch(f"{API_PREFIX}/auth/me", json={"avatar_url": None})
+    assert clear_resp.status_code == 200, clear_resp.text
+    assert clear_resp.json()["avatar_url"] is None
+
+
+def test_usage_stats_start_empty_and_record_tokens(client, monkeypatch):
+    initial = client.get(f"{API_PREFIX}/auth/me/usage").json()
+    assert initial["total_tokens"] == 0
+    assert initial["tokens_today"] == 0
+    assert initial["tokens_7d"] == 0
+    assert initial["tokens_30d"] == 0
+    assert initial["requests"] == 0
+
+    # One chat turn that consumes tokens must show up in the aggregate.
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
+        if callable(usage_hook):
+            usage_hook(123)
+        return "Ответ с токенами."
+
+    monkeypatch.setattr("app.services.gemini.generate_answer", fake)
+
+    resp = client.post(f"{API_PREFIX}/chat", json={"question": "сколько токенов я потратил"})
+    assert resp.status_code == 200, resp.text
+
+    usage = client.get(f"{API_PREFIX}/auth/me/usage").json()
+    assert usage["total_tokens"] == 123
+    assert usage["tokens_today"] == 123
+    assert usage["requests"] == 1
+
+
+def _current_email(client: TestClient) -> str:
+    return client.get(f"{API_PREFIX}/auth/me").json()["email"]

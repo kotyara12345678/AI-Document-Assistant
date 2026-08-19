@@ -26,7 +26,7 @@ def fake_gemini(monkeypatch):
     calls = {}
 
     def fake_generate_answer(
-        prompt, system_instruction=None, client=None, history=None, summary=None
+        prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None
     ):
         calls["prompt"] = prompt
         calls["system_instruction"] = system_instruction
@@ -116,7 +116,7 @@ def test_chat_degraded_when_gemini_fails(client, monkeypatch):
     resp = _upload(client, "degrade.txt", text.encode("utf-8"))
     assert resp.status_code == 201
 
-    def failing_gemini(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def failing_gemini(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         raise gemini.GeminiError("boom")
 
     monkeypatch.setattr(gemini, "generate_answer", failing_gemini)
@@ -165,7 +165,7 @@ def test_history_rolling_summary(client, monkeypatch):
     calls = []
 
     def summarizing_gemini(
-        prompt, system_instruction=None, client=None, history=None, summary=None
+        prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None
     ):
         calls.append(
             {"prompt": prompt, "system_instruction": system_instruction,
@@ -211,7 +211,7 @@ def test_ai_prefix_uses_plain_gigachat_without_rag(client, monkeypatch):
     calls = []
 
     def recording_gemini(
-        prompt, system_instruction=None, client=None, history=None, summary=None
+        prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None
     ):
         calls.append({"prompt": prompt, "history": history})
         return "Прямой ответ без документов."

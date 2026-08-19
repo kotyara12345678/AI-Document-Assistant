@@ -1,224 +1,287 @@
-import { useEffect, useState } from "react";
-import { changePassword, deleteMe, fetchMeStats } from "../api";
-import type { MeStats, UserOut } from "../types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { changePassword, deleteMe, fetchUsageStats, updateProfileAvatar } from "../api";
+import type { UsageStats, UserOut } from "../types";
 
-interface Props {
+const MAX_AVATAR_BYTES = 1_000_000;
+
+interface ProfilePanelProps {
   user: UserOut;
   onBack: () => void;
-  onDeleted: () => void;
+  onUserUpdated: (user: UserOut) => void;
+  theme: string;
+  onToggleTheme: () => void;
+  onLogout: () => void;
+  onDeleted?: () => void;
 }
 
-function roleLabel(role: string): string {
-  switch (role) {
-    case "admin":
-      return "Администратор";
-    case "moderator":
-      return "Модератор";
-    default:
-      return "Пользователь";
-  }
+function formatTokens(n: number): string {
+  return new Intl.NumberFormat("ru-RU").format(n);
 }
 
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleDateString("ru-RU");
-}
-
-function StatCard({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-card__value">{value.toLocaleString("ru-RU")}</div>
-      <div className="stat-card__title">{label}</div>
-    </div>
-  );
-}
-
-export default function ProfilePanel({ user, onBack, onDeleted }: Props) {
-  const [stats, setStats] = useState<MeStats | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onToggleTheme, onLogout, onDeleted }: ProfilePanelProps) {
+  const [avatar, setAvatar] = useState<string | null>(user.avatar_url ?? null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [passwordConfirm, setPasswordConfirm] = useState("");
-  const [changing, setChanging] = useState(false);
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordMsg, setPasswordMsg] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const [stats, setStats] = useState<UsageStats | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetchMeStats()
-      .then((data) => {
-        if (!cancelled) setStats(data);
+    fetchUsageStats()
+      .then((s) => {
+        if (!cancelled) setStats(s);
       })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Не удалось загрузить статистику");
+      .catch(() => {
+        /* stats are non-critical */
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const submitPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPasswordError(null);
-    if (newPassword !== passwordConfirm) {
-      setPasswordError("Пароли не совпадают");
-      return;
-    }
-    setChanging(true);
-    try {
-      await changePassword(currentPassword, newPassword, passwordConfirm);
-      setCurrentPassword("");
-      setNewPassword("");
-      setPasswordConfirm("");
-      setNotice("Пароль изменён.");
-    } catch (err) {
-      setPasswordError(err instanceof Error ? err.message : "Не удалось изменить пароль");
-    } finally {
-      setChanging(false);
-    }
-  };
+  const onFileChosen = useCallback(
+    (file: File | undefined) => {
+      setAvatarError(null);
+      if (!file) return;
+      if (!file.type.startsWith("image/")) {
+        setAvatarError("Выберите файл изображения (PNG, JPG и т.п.)");
+        return;
+      }
+      if (file.size > MAX_AVATAR_BYTES) {
+        setAvatarError("Файл слишком большой — максимум 1 МБ");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : null;
+        setAvatar(result);
+        if (result) {
+          setAvatarBusy(true);
+          updateProfileAvatar(result)
+            .then(onUserUpdated)
+            .catch((err: unknown) => {
+              setAvatarError(err instanceof Error ? err.message : "Не удалось сохранить фото");
+            })
+            .finally(() => setAvatarBusy(false));
+        }
+      };
+      reader.readAsDataURL(file);
+    },
+    [onUserUpdated]
+  );
 
-  const confirmDelete = () => {
+  const removeAvatar = useCallback(async () => {
+    setAvatarError(null);
+    setAvatar(null);
+    setAvatarBusy(true);
+    try {
+      const updated = await updateProfileAvatar(null);
+      onUserUpdated(updated);
+    } catch (err) {
+      setAvatarError(err instanceof Error ? err.message : "Не удалось удалить фото");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [onUserUpdated]);
+
+  const submitPassword = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      setPasswordMsg(null);
+      setPasswordError(null);
+      if (newPassword.length < 6) {
+        setPasswordError("Пароль должен быть не короче 6 символов");
+        return;
+      }
+      if (newPassword !== newPasswordConfirm) {
+        setPasswordError("Пароли не совпадают");
+        return;
+      }
+      setPasswordBusy(true);
+      try {
+        const updated = await changePassword(currentPassword, newPassword, newPasswordConfirm);
+        onUserUpdated(updated);
+        setCurrentPassword("");
+        setNewPassword("");
+        setNewPasswordConfirm("");
+        setPasswordMsg("Пароль успешно изменён");
+      } catch (err) {
+        setPasswordError(err instanceof Error ? err.message : "Не удалось изменить пароль");
+      } finally {
+        setPasswordBusy(false);
+      }
+    },
+    [currentPassword, newPassword, newPasswordConfirm, onUserUpdated]
+  );
+
+  const confirmDelete = useCallback(() => {
     const ok = window.confirm(
       "Удалить аккаунт? Ваши документы, чаты и данные станут недоступны. Это действие нельзя отменить."
     );
     if (!ok) return;
+    setDeleteError(null);
     setDeleting(true);
     deleteMe()
       .then(onDeleted)
-      .catch((err) => {
+      .catch((err: unknown) => {
         setDeleting(false);
-        setError(err instanceof Error ? err.message : "Не удалось удалить аккаунт");
+        setDeleteError(err instanceof Error ? err.message : "Не удалось удалить аккаунт");
       });
-  };
+  }, [onDeleted]);
 
   return (
-    <main className="admin">
-      <div className="admin__inner">
-        <div className="admin__header">
-          <button className="admin__back" onClick={onBack}>
-            ← К чату
-          </button>
-          <div>
-            <h1 className="admin__title">Личный кабинет</h1>
-            <div className="admin__subtitle">
-              Профиль и статистика использования — содержимое документов и чатов здесь не отображается.
+    <div className="profile-page">
+      <header className="profile-page__header">
+        <button className="profile-page__back" onClick={onBack}>
+          ← Назад к чату
+        </button>
+        <h1 className="profile-page__title">Личный кабинет</h1>
+        <div className="profile-page__spacer" />
+      </header>
+
+      <div className="profile-page__body">
+        <section className="profile-card">
+          <h2 className="profile-card__title">Фото профиля</h2>
+          <div className="profile-avatar-row">
+            {avatar ? (
+              <img className="profile-avatar profile-avatar--lg" src={avatar} alt="Фото профиля" />
+            ) : (
+              <span className="profile-avatar profile-avatar--lg profile-avatar--fallback">
+                {user.email.slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <div className="profile-avatar-actions">
+              <button className="modal__btn" onClick={() => fileRef.current?.click()} disabled={avatarBusy}>
+                {avatarBusy ? "Сохранение…" : "Загрузить фото"}
+              </button>
+              {avatar && (
+                <button className="modal__btn" onClick={() => void removeAvatar()} disabled={avatarBusy}>
+                  Удалить
+                </button>
+              )}
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={(e) => onFileChosen(e.target.files?.[0])}
+              />
             </div>
           </div>
-        </div>
+          {avatarError && <div className="profile-error">{avatarError}</div>}
+        </section>
 
-        {error && (
-          <div className="admin__error">
-            {error}
-          </div>
-        )}
+        <section className="profile-card">
+          <h2 className="profile-card__title">Смена пароля</h2>
+          <form className="profile-form" onSubmit={(e) => void submitPassword(e)}>
+            <input
+              className="profile-input"
+              type="password"
+              placeholder="Текущий пароль"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+            <input
+              className="profile-input"
+              type="password"
+              placeholder="Новый пароль (мин. 6 символов)"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <input
+              className="profile-input"
+              type="password"
+              placeholder="Повторите новый пароль"
+              value={newPasswordConfirm}
+              onChange={(e) => setNewPasswordConfirm(e.target.value)}
+              autoComplete="new-password"
+            />
+            {passwordError && <div className="profile-error">{passwordError}</div>}
+            {passwordMsg && <div className="profile-ok">{passwordMsg}</div>}
+            <button className="modal__btn profile-form__submit" type="submit" disabled={passwordBusy || !currentPassword}>
+              {passwordBusy ? "Сохранение…" : "Изменить пароль"}
+            </button>
+          </form>
+        </section>
 
-        {notice && (
-          <div className="admin__notice">
-            {notice}
-          </div>
-        )}
-
-        {!error && !stats && <div className="admin__loading">Загружаем данные…</div>}
-
-        {!error && stats && (
-          <div className="admin__body">
-            <section className="admin__section">
-              <h2 className="admin__section-title">Профиль</h2>
-              <div className="profile-card">
-                <span className="profile-card__avatar">{user.email.slice(0, 1).toUpperCase()}</span>
-                <div className="profile-card__info">
-                  <div className="profile-card__email">{stats.user.email}</div>
-                  <div className="profile-card__meta">
-                    {roleLabel(stats.user.role)} · зарегистрирован {formatDate(stats.user.created_at)}
-                  </div>
-                  <div className="profile-card__meta">
-                    Последняя активность: {formatDate(stats.last_active_at)}
-                  </div>
-                </div>
+        <section className="profile-card">
+          <h2 className="profile-card__title">Использование токенов</h2>
+          {stats ? (
+            <div className="profile-stats">
+              <div className="profile-stats__row">
+                <span>Всего</span>
+                <b>{formatTokens(stats.total_tokens)}</b>
               </div>
-            </section>
-
-            <section className="admin__section">
-              <h2 className="admin__section-title">Использование</h2>
-              <div className="admin__stats-grid">
-                <StatCard label="Документы" value={stats.documents_total} />
-                <StatCard label="Чаты" value={stats.chats_total} />
-                <StatCard label="Сообщения" value={stats.messages_total} />
-                <StatCard label="Использовано токенов" value={stats.tokens_used} />
+              <div className="profile-stats__row">
+                <span>Сегодня</span>
+                <b>{formatTokens(stats.tokens_today)}</b>
               </div>
-            </section>
+              <div className="profile-stats__row">
+                <span>За 7 дней</span>
+                <b>{formatTokens(stats.tokens_7d)}</b>
+              </div>
+              <div className="profile-stats__row">
+                <span>За 30 дней</span>
+                <b>{formatTokens(stats.tokens_30d)}</b>
+              </div>
+              <div className="profile-stats__row">
+                <span>Запросов</span>
+                <b>{formatTokens(stats.requests)}</b>
+              </div>
+            </div>
+          ) : (
+            <div className="profile-stats__empty">Загружаем статистику…</div>
+          )}
+        </section>
 
-            <section className="admin__section">
-              <h2 className="admin__section-title">Безопасность</h2>
-              <form className="profile-form" onSubmit={(e) => void submitPassword(e)}>
-                <label className="profile-form__label">
-                  Текущий пароль
-                  <input
-                    type="password"
-                    className="profile-form__input"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    autoComplete="current-password"
-                  />
-                </label>
-                <label className="profile-form__label">
-                  Новый пароль
-                  <input
-                    type="password"
-                    className="profile-form__input"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    autoComplete="new-password"
-                  />
-                </label>
-                <label className="profile-form__label">
-                  Повторите новый пароль
-                  <input
-                    type="password"
-                    className="profile-form__input"
-                    value={passwordConfirm}
-                    onChange={(e) => setPasswordConfirm(e.target.value)}
-                    required
-                    minLength={6}
-                    autoComplete="new-password"
-                  />
-                </label>
-                {passwordError && <div className="admin__error">{passwordError}</div>}
-                <button
-                  type="submit"
-                  className="btn--admin"
-                  disabled={changing || !currentPassword || !newPassword || !passwordConfirm}
-                >
-                  {changing ? "Сохраняем…" : "Сменить пароль"}
-                </button>
-              </form>
-            </section>
-
-            <section className="admin__section admin__section--danger">
-              <h2 className="admin__section-title">Опасная зона</h2>
-              <p className="admin__subtitle">
-                Удаление аккаунта делает недоступными все ваши документы и чаты. Это действие нельзя отменить.
-              </p>
-              <button
-                type="button"
-                className="btn--danger"
-                onClick={confirmDelete}
-                disabled={deleting}
-              >
-                {deleting ? "Удаляем…" : "Удалить аккаунт"}
-              </button>
-            </section>
+        <section className="profile-card">
+          <h2 className="profile-card__title">Тема и вход</h2>
+          <div className="profile-settings-row">
+            <span>Тема оформления</span>
+            <button className="profile-theme-btn" onClick={onToggleTheme}>
+              {theme === "dark" ? "☀️ Светлая" : "🌙 Тёмная"}
+            </button>
           </div>
+          <button className="profile-logout-btn" onClick={onLogout}>
+            <svg className="profile-logout-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M16.8 2H14.2C11 2 9 4 9 7.2V11.25H15.25C15.66 11.25 16 11.59 16 12C16 12.41 15.66 12.75 15.25 12.75H9V16.8C9 20 11 22 14.2 22H16.79C19.99 22 21.99 20 21.99 16.8V7.2C22 4 20 2 16.8 2Z" />
+              <path d="M4.55994 11.2498L6.62994 9.17984C6.77994 9.02984 6.84994 8.83984 6.84994 8.64984C6.84994 8.45984 6.77994 8.25984 6.62994 8.11984C6.33994 7.82984 5.85994 7.82984 5.56994 8.11984L2.21994 11.4698C1.92994 11.7598 1.92994 12.2398 2.21994 12.5298L5.56994 15.8798C5.85994 16.1698 6.33994 16.1698 6.62994 15.8798C6.91994 15.5898 6.91994 15.1098 6.62994 14.8198L4.55994 12.7498H8.99994V11.2498H4.55994Z" />
+            </svg>
+            Выйти
+          </button>
+        </section>
+
+        {onDeleted && (
+          <section className="profile-card profile-card--danger">
+            <h2 className="profile-card__title">Опасная зона</h2>
+            <p className="profile-danger-text">
+              Удаление аккаунта делает недоступными все ваши документы и чаты. Это действие нельзя отменить.
+            </p>
+            {deleteError && <div className="profile-error">{deleteError}</div>}
+            <button
+              type="button"
+              className="profile-delete-btn"
+              onClick={confirmDelete}
+              disabled={deleting}
+            >
+              {deleting ? "Удаляем…" : "Удалить аккаунт"}
+            </button>
+          </section>
         )}
       </div>
-    </main>
+    </div>
   );
 }

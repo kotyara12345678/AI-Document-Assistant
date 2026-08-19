@@ -291,7 +291,8 @@ def _recent_history(
 
 
 def _make_summary(
-    db: Session, chat: Chat, before_id: int | None = None
+    db: Session, chat: Chat, before_id: int | None = None,
+    usage_hook=None,
 ) -> str | None:
     """Generate (or refresh) a rolling summary of the older history.
 
@@ -351,7 +352,9 @@ def _make_summary(
 
     try:
         summary = gemini.generate_answer(
-            prompt, system_instruction=settings.CHAT_SUMMARY_INSTRUCTION
+            prompt,
+            system_instruction=settings.CHAT_SUMMARY_INSTRUCTION,
+            usage_hook=usage_hook,
         )
     except gemini.GeminiError:
         logger.exception("Summary generation failed; keeping previous summary")
@@ -399,9 +402,19 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
         chat.title = _make_title(request.question)
         db.commit()
 
+    # Token accounting: every LLM call in this turn contributes to one UsageLog
+    # row (metadata classifier + summary + the answer itself).
+    tokens_acc: list[int] = []
+    usage_hook = lambda t: tokens_acc.append(t)
+
+    def _flush_tokens() -> None:
+        from app.services.usage_log import record_tokens
+
+        record_tokens(db, user_id, sum(tokens_acc))
+
     # Conversational context: recent turns verbatim + summary of older history.
     history = _recent_history(db, chat.id, before_id=user_message.id)
-    summary = _make_summary(db, chat, before_id=user_message.id)
+    summary = _make_summary(db, chat, before_id=user_message.id, usage_hook=usage_hook)
 
     # Temporary routing: "@ai ..." -> plain GigaChat without RAG.
     stripped = request.question.strip()
@@ -413,11 +426,13 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
                 system_instruction=f"{SYSTEM_INSTRUCTION}\n{current_datetime_note()}",
                 history=history,
                 summary=summary,
+                usage_hook=usage_hook,
             )
         except gemini.GeminiError:
             logger.exception("Gemini failed in direct mode")
             answer = "[Gemini unavailable] Please try again later."
         _save_message(db, user_id, chat.id, "assistant", answer)
+        _flush_tokens()
         return ChatResponse(chat_id=chat.id, answer=answer, sources=[])
 
     # Decide whether this question needs document metadata at all. When it
@@ -425,7 +440,7 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
     # it does, only the requested (available) fields are attached and a named
     # document can narrow retrieval. Any classifier failure degrades to "no
     # metadata", so the pipeline never guesses or fails.
-    decision = gemini.classify_metadata_need(request.question)
+    decision = gemini.classify_metadata_need(request.question, usage_hook=usage_hook)
 
     target_doc_id: int | list[int] | None = None
     if request.document_ids:
@@ -449,6 +464,7 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
             "I could not find relevant information in the documents to answer this question."
         )
         _save_message(db, user_id, chat.id, "assistant", answer)
+        _flush_tokens()
         return ChatResponse(chat_id=chat.id, answer=answer, sources=[])
 
     metadata: dict[int, dict[str, object]] | None = None
@@ -463,6 +479,7 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
             system_instruction=f"{SYSTEM_INSTRUCTION}\n{current_datetime_note()}",
             history=history,
             summary=summary,
+            usage_hook=usage_hook,
         )
     except gemini.GeminiError:
         # Honest degradation: fall back to the top chunk instead of failing.
@@ -470,6 +487,7 @@ def answer_question(request: ChatRequest, user_id: int, db: Session) -> ChatResp
         answer = f"[Gemini unavailable] Best match: {chunks[0].text[:500]}"
 
     _save_message(db, user_id, chat.id, "assistant", answer)
+    _flush_tokens()
 
     sources = [chunk.source for chunk in chunks]
     return ChatResponse(chat_id=chat.id, answer=answer, sources=sources)

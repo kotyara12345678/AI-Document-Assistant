@@ -108,7 +108,9 @@ def _parse_metadata_decision(raw: str) -> MetadataDecision:
     return MetadataDecision(needs_metadata=needs, fields=fields, target_filename=target)
 
 
-def classify_metadata_need(question: str, client=None) -> MetadataDecision:
+def classify_metadata_need(
+    question: str, client=None, usage_hook=None
+) -> MetadataDecision:
     """Ask the LLM whether `question` needs document metadata to be answered.
 
     Returns a MetadataDecision. Any failure (missing credentials, upstream
@@ -123,6 +125,7 @@ def classify_metadata_need(question: str, client=None) -> MetadataDecision:
             prompt,
             system_instruction=settings.CHAT_METADATA_CLASSIFIER_INSTRUCTION,
             client=client,
+            usage_hook=usage_hook,
         )
         return _parse_metadata_decision(raw)
     except Exception:
@@ -340,6 +343,7 @@ def chat_completion(
     tools: list[dict] | None = None,
     max_tokens: int | None = None,
     response_format: dict | None = None,
+    usage_hook=None,
 ) -> dict:
     """Send an OpenAI-compatible chat completion and return the assistant message.
 
@@ -352,6 +356,11 @@ def chat_completion(
     that need a larger answer, e.g. batch document editing). ``response_format``
     requests structured output (e.g. ``{"type": "json_object"}``); it is ignored
     by GigaChat versions that do not honour it, and callers still parse robustly.
+
+    ``usage_hook`` is an optional ``callable(total_tokens: int)`` invoked after
+    a successful completion. It receives the real total token count from the
+    provider response when available, otherwise a conservative estimate, so
+    user-facing token accounting works even when the provider omits ``usage``.
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
@@ -387,9 +396,43 @@ def chat_completion(
         raise GeminiError(f"GigaChat request failed: {exc}") from exc
 
     try:
-        return data["choices"][0]["message"]
+        message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise GeminiError("GigaChat returned an empty response") from exc
+
+    if callable(usage_hook):
+        usage_hook(_extract_total_tokens(data, messages, message))
+    return message
+
+
+def _extract_total_tokens(data: dict, messages: list[dict], message: dict) -> int:
+    """Best-effort token count for one completion.
+
+    Prefers the provider's real ``usage.total_tokens`` when present; when it is
+    missing or zero (some providers/mock servers omit it), falls back to a
+    conservative estimate: the token economy is roughly ~4 chars per token, so
+    sum the character length of the request messages plus the assistant reply.
+    """
+    usage = data.get("usage") or {}
+    if isinstance(usage, dict):
+        total = usage.get("total_tokens")
+        if isinstance(total, int) and total > 0:
+            return total
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        if (isinstance(prompt, int) and isinstance(completion, int)
+                and prompt + completion > 0):
+            return prompt + completion
+
+    chars = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+    reply = message.get("content")
+    if isinstance(reply, str):
+        chars += len(reply)
+    return max(1, chars // 4)
 
 
 def _safe_body(response) -> str:
@@ -459,6 +502,7 @@ def chat_with_functions(
     function_call: str = "auto",
     functions_state_id: str | None = None,
     client=None,
+    usage_hook=None,
 ) -> tuple[dict, str | None]:
     """Send a chat completion with GigaChat's native function calling enabled.
 
@@ -473,6 +517,9 @@ def chat_with_functions(
     ``role: "function"`` message. ``functions_state_id`` is an opaque state
     token that GigaChat requires to be echoed back unchanged in every request
     of the same tool-call turn.
+
+    ``usage_hook`` is the same optional ``callable(total_tokens: int)`` as in
+    :func:`chat_completion` — invoked once after a successful response.
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
@@ -521,6 +568,8 @@ def chat_with_functions(
         raise GeminiError("GigaChat returned an empty response") from exc
 
     state_id = data.get("functions_state_id") or message.get("functions_state_id")
+    if callable(usage_hook):
+        usage_hook(_extract_total_tokens(data, messages, message))
     return message, state_id
 
 
@@ -532,6 +581,7 @@ def generate_answer(
     summary: str | None = None,
     max_tokens: int | None = None,
     response_format: dict | None = None,
+    usage_hook=None,
 ) -> str:
     """Send a prompt to GigaChat and return the text answer.
 
@@ -539,6 +589,7 @@ def generate_answer(
     and `summary` is a compact rollup of older turns; together they provide
     conversational context without sending the full history. `max_tokens` and
     `response_format` are forwarded to the underlying completion call.
+    `usage_hook` is forwarded to :func:`chat_completion`.
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
@@ -548,6 +599,7 @@ def generate_answer(
         client=client,
         max_tokens=max_tokens,
         response_format=response_format,
+        usage_hook=usage_hook,
     )
     answer = message.get("content")
     if not answer:

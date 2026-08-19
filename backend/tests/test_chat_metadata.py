@@ -27,7 +27,7 @@ def _metadata_gemini(decision: str, answer: str):
     other calls return `answer` and record the answer prompt."""
     captured: dict = {}
 
-    def fake(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         if system_instruction == CLASSIFIER_INS:
             return decision
         captured["prompt"] = prompt
@@ -143,7 +143,7 @@ def test_classifier_failure_falls_back_to_no_metadata(client, monkeypatch):
 
     captured: dict = {}
 
-    def fake(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         if system_instruction == CLASSIFIER_INS:
             raise gemini.GeminiError("classifier boom")
         captured["prompt"] = prompt

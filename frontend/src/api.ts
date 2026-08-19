@@ -16,6 +16,7 @@ import type {
   MeStats,
   MessageOut,
   SourceRef,
+  UsageStats,
   UserOut,
   UserRole,
 } from "./types";
@@ -94,23 +95,37 @@ export async function fetchMeStats(): Promise<MeStats> {
 export async function changePassword(
   currentPassword: string,
   newPassword: string,
-  passwordConfirm: string,
-): Promise<void> {
-  const res = await fetch(`${BASE}/auth/change-password`, {
-    method: "POST",
+  newPasswordConfirm: string,
+): Promise<UserOut> {
+  const res = await fetch(`${BASE}/auth/me/password`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       current_password: currentPassword,
       new_password: newPassword,
-      password_confirm: passwordConfirm,
+      new_password_confirm: newPasswordConfirm,
     }),
   });
-  await handle<{ changed: boolean }>(res);
+  return handle<UserOut>(res);
 }
 
 export async function deleteMe(): Promise<void> {
   const res = await fetch(`${BASE}/me`, { method: "DELETE", headers: authHeaders() });
   await handle<{ deleted: boolean }>(res);
+}
+
+export async function updateProfileAvatar(avatarUrl: string | null): Promise<UserOut> {
+  const res = await fetch(`${BASE}/auth/me`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ avatar_url: avatarUrl }),
+  });
+  return handle<UserOut>(res);
+}
+
+export async function fetchUsageStats(): Promise<UsageStats> {
+  const res = await fetch(`${BASE}/auth/me/usage`, { headers: authHeaders() });
+  return handle<UsageStats>(res);
 }
 
 export async function fetchDocuments(): Promise<DocumentOut[]> {

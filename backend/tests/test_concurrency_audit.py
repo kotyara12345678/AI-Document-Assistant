@@ -534,7 +534,7 @@ def test_resolve_chat_concurrent_first_single_chat(user_id):
 def test_parallel_agent_turns_do_not_mix(client, user_id, monkeypatch):
     chat_id = _make_chat(user_id)
 
-    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         q = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "?")
         return {"content": f"ANSWER[{q}]"}, None
 

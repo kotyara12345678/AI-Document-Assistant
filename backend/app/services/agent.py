@@ -654,12 +654,20 @@ class AgentService:
             functions_state_id: str | None = None
             answer = ""
 
+            # Token accounting: every LLM call in the loop/verdict contributes
+            # to one UsageLog row persisted when the turn finishes.
+            tokens_acc: list[int] = []
+
+            def _usage_hook(t: int) -> None:
+                tokens_acc.append(t)
+
             try:
                 for _ in range(max(1, settings.AGENT_MAX_TOOL_ROUNDS)):
                     message, functions_state_id = gemini.chat_with_functions(
                         messages,
                         functions=self.functions_spec(),
                         functions_state_id=functions_state_id,
+                        usage_hook=_usage_hook,
                     )
                     call = message.get("function_call")
                     if not call:
@@ -751,7 +759,9 @@ class AgentService:
                 else:
                     # Bounded loop safety net: one last plain call so we answer.
                     try:
-                        message, _ = gemini.chat_with_functions(messages)
+                        message, _ = gemini.chat_with_functions(
+                            messages, usage_hook=_usage_hook
+                        )
                         answer = (message.get("content") or "").strip()
                     except gemini.GeminiError:
                         logger.exception("GigaChat failed on the final agent turn")
@@ -802,6 +812,15 @@ class AgentService:
                 "sources": sources,
             }
         finally:
+            try:
+                from app.services.usage_log import record_tokens
+
+                record_tokens(db, user_id, sum(tokens_acc))
+            except NameError:
+                # tokens_acc is bound only after the tool loop starts (i.e. the
+                # pre-loop early returns for explicit-context/deterministic edits
+                # never reach the LLM loop); nothing to account for then.
+                pass
             if own_db:
                 db.close()
 

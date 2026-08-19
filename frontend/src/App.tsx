@@ -25,6 +25,7 @@ import ProfilePanel from "./components/ProfilePanel";
 import LandingFlow from "./components/LandingFlow";
 import UploadWarning from "./components/UploadWarning";
 import ComparePanel from "./components/ComparePanel";
+import Library from "./components/Library";
 import { hasSeenUploadWarning, markUploadWarningSeen } from "./consent";
 import CopyableBlock, { extractCodeBlock } from "./codeBlock";
 
@@ -41,6 +42,11 @@ interface Message {
 }
 
 const THEME_KEY = "docsearch-theme";
+const SIDEBAR_COLLAPSE_KEY = "docsearch-sidebar-collapsed";
+const SIDEBAR_WIDTH_KEY = "docsearch-sidebar-width";
+const DEFAULT_SIDEBAR_WIDTH = 300;
+const MIN_SIDEBAR_WIDTH = 200;
+const MAX_SIDEBAR_WIDTH = 460;
 let localMsgId = 0;
 
 function nextLocalId(): number {
@@ -77,6 +83,8 @@ function formatBytes(bytes: number): string {
 
 export default function App() {
   const [user, setUser] = useState<UserOut | null>(null);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [documents, setDocuments] = useState<DocumentOut[]>([]);
   const [chats, setChats] = useState<ChatOut[]>([]);
@@ -95,7 +103,6 @@ export default function App() {
   const [viewerHighlights, setViewerHighlights] = useState<string[]>([]);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
   // Compare mode: which document is preselected on the left (null = closed).
   const [compareDocId, setCompareDocId] = useState<number | null>(null);
   // Docs list "⋯" menu: which document's actions menu is open (null = closed).
@@ -104,6 +111,26 @@ export default function App() {
   const [chatMenuFor, setChatMenuFor] = useState<number | null>(null);
   // Mobile-only drawer (left panel becomes a tab opened via the top-right button).
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop: user can collapse the whole left panel. Persisted per browser.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  // Desktop: user can drag-resize the panel width. Persisted per browser.
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const raw = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+      if (Number.isFinite(raw) && raw >= MIN_SIDEBAR_WIDTH && raw <= MAX_SIDEBAR_WIDTH) return raw;
+    } catch {
+      /* storage unavailable */
+    }
+    return DEFAULT_SIDEBAR_WIDTH;
+  });
+  // Collapsed-rail "recent chats" popover.
+  const [railChatsOpen, setRailChatsOpen] = useState(false);
   // Documents the user has pinned as context for the next message (UI chips).
   const [contextDocs, setContextDocs] = useState<number[]>([]);
   // Files awaiting confirmation of the first-upload warning.
@@ -141,6 +168,25 @@ export default function App() {
     stickToBottomRef.current = true;
     const el = messagesRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    // On desktops the left panel is a permanent column: toggle it. On mobile
+    // it is a drawer opened through the same button.
+    const isDesktop = window.matchMedia("(min-width: 901px)").matches;
+    if (isDesktop) {
+      setSidebarCollapsed((collapsed) => {
+        const next = !collapsed;
+        try {
+          localStorage.setItem(SIDEBAR_COLLAPSE_KEY, next ? "1" : "0");
+        } catch {
+          /* storage unavailable */
+        }
+        return next;
+      });
+    } else {
+      setSidebarOpen(true);
+    }
   }, []);
 
   const logout = useCallback(() => {
@@ -277,6 +323,45 @@ export default function App() {
     },
     [clearSidebarDrag]
   );
+
+  // --- Desktop drag-resize of the sidebar width (via the right-edge handle) ---
+  const resizeStartRef = useRef<{ x: number; w: number } | null>(null);
+
+  const startSidebarResize = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    e.preventDefault();
+    resizeStartRef.current = { x: e.clientX, w: sidebarWidth };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* not critical */
+    }
+    document.body.style.userSelect = "none";
+  }, [sidebarWidth]);
+
+  const moveSidebarResize = useCallback(
+    (e: React.PointerEvent<HTMLElement>) => {
+      const start = resizeStartRef.current;
+      if (!start) return;
+      const next = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, start.w + e.clientX - start.x));
+      setSidebarWidth(next);
+      try {
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    []
+  );
+
+  const endSidebarResize = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    resizeStartRef.current = null;
+    document.body.style.userSelect = "";
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* not critical */
+    }
+  }, []);
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -438,6 +523,13 @@ export default function App() {
       setViewerLoading(false);
     }
   }, []);
+
+  const openDocumentById = useCallback(
+    (doc: DocumentOut) => {
+      void openDocument(doc.id);
+    },
+    [openDocument]
+  );
 
   const closeViewer = useCallback(() => {
     setViewer(null);
@@ -664,17 +756,148 @@ export default function App() {
   }
 
   return (
-    <div className="layout">
+    <div className={`layout ${sidebarCollapsed ? "layout--no-sidebar" : ""}`}>
+      <nav className="sidebar-rail" aria-label="Быстрый доступ">
+        <button
+          type="button"
+          className="sidebar-rail__toggle"
+          onClick={toggleSidebar}
+          aria-label="Показать панель"
+          title="Показать панель"
+        >
+          <svg className="collapse-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M9 22H15C20 22 22 20 22 15V9C22 4 20 2 15 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M9 2V22" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+
+        <div className="sidebar-rail__buttons">
+          <button
+            type="button"
+            className="sidebar-rail__btn"
+            onClick={() => void newChat()}
+            title="Создать чат"
+            aria-label="Создать чат"
+          >
+            <svg className="rail-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M11 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22H15C20 22 22 20 22 15V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16.0399 3.01928L8.15988 10.8993C7.85988 11.1993 7.55988 11.7893 7.49988 12.2193L7.06988 15.2293C6.90988 16.3193 7.67988 17.0793 8.76988 16.9293L11.7799 16.4993C12.1999 16.4393 12.7899 16.1393 13.0999 15.8393L20.9799 7.95928C22.3399 6.59928 22.9799 5.01928 20.9799 3.01928C18.9799 1.01928 17.3999 1.65928 16.0399 3.01928Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M14.9102 4.15039C15.5802 6.54039 17.4502 8.41039 19.8502 9.09039" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="sidebar-rail__btn"
+            onClick={() => { setShowLibrary((v) => !v); setShowAdmin(false); setShowProfile(false); }}
+            title="Библиотека"
+            aria-label="Библиотека"
+          >
+            <svg className="rail-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M21 7V17C21 20 19.5 22 16 22H8C4.5 22 3 20 3 17V7C3 4 4.5 2 8 2H16C19.5 2 21 4 21 7Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M15.5 2V9.85999C15.5 10.3 14.98 10.52 14.66 10.23L12.34 8.09003C12.15 7.91003 11.85 7.91003 11.66 8.09003L9.34003 10.23C9.02003 10.52 8.5 10.3 8.5 9.85999V2H15.5Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M13.25 14H17.5" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M9 18H17.5" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <div className="sidebar-rail__btn-wrap">
+            <button
+              type="button"
+              className="sidebar-rail__btn"
+              onClick={() => setRailChatsOpen((v) => !v)}
+              title="Недавние чаты"
+              aria-label="Недавние чаты"
+            >
+              <svg className="rail-icon" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <g clipPath="url(#rail-chats-clip)">
+                  <path d="M17.6201 9.61914H12.3701C11.9601 9.61914 11.6201 9.27914 11.6201 8.86914C11.6201 8.45914 11.9601 8.11914 12.3701 8.11914H17.6201C18.0301 8.11914 18.3701 8.45914 18.3701 8.86914C18.3701 9.27914 18.0401 9.61914 17.6201 9.61914Z" />
+                  <path d="M7.12006 10.3803C6.93006 10.3803 6.74006 10.3103 6.59006 10.1603L5.84006 9.41031C5.55006 9.12031 5.55006 8.64031 5.84006 8.35031C6.13006 8.06031 6.61006 8.06031 6.90006 8.35031L7.12006 8.57031L8.84006 6.85031C9.13006 6.56031 9.61006 6.56031 9.90006 6.85031C10.1901 7.14031 10.1901 7.62031 9.90006 7.91031L7.65006 10.1603C7.51006 10.3003 7.32006 10.3803 7.12006 10.3803Z" />
+                  <path d="M17.6201 16.6191H12.3701C11.9601 16.6191 11.6201 16.2791 11.6201 15.8691C11.6201 15.4591 11.9601 15.1191 12.3701 15.1191H17.6201C18.0301 15.1191 18.3701 15.4591 18.3701 15.8691C18.3701 16.2791 18.0401 16.6191 17.6201 16.6191Z" />
+                  <path d="M7.12006 17.3803C6.93006 17.3803 6.74006 17.3103 6.59006 17.1603L5.84006 16.4103C5.55006 16.1203 5.55006 15.6403 5.84006 15.3503C6.13006 15.0603 6.61006 15.0603 6.90006 15.3503L7.12006 15.5703L8.84006 13.8503C9.13006 13.5603 9.61006 13.5603 9.90006 13.8503C10.1901 14.1403 10.1901 14.6203 9.90006 14.9103L7.65006 17.1603C7.51006 17.3003 7.32006 17.3803 7.12006 17.3803Z" />
+                  <path d="M15 22.75H9C3.57 22.75 1.25 20.43 1.25 15V9C1.25 3.57 3.57 1.25 9 1.25H15C20.43 1.25 22.75 3.57 22.75 9V15C22.75 20.43 20.43 22.75 15 22.75ZM9 2.75C4.39 2.75 2.75 4.39 2.75 9V15C2.75 19.61 4.39 21.25 9 21.25H15C19.61 21.25 21.25 19.61 21.25 15V9C21.25 4.39 19.61 2.75 15 2.75H9Z" />
+                </g>
+                <defs>
+                  <clipPath id="rail-chats-clip">
+                    <rect width="24" height="24" fill="none" />
+                  </clipPath>
+                </defs>
+              </svg>
+            </button>
+            {railChatsOpen && (
+              <>
+                <div className="doc-menu-backdrop" onClick={() => setRailChatsOpen(false)} />
+                <div className="rail-chats">
+                  <div className="rail-chats__title">Недавние чаты</div>
+                  {chatsLoading ? (
+                    <div className="rail-chats__empty">Загружаем…</div>
+                  ) : chats.length === 0 ? (
+                    <div className="rail-chats__empty">Чатов пока нет.</div>
+                  ) : (
+                    [...chats].slice(0, 10).map((chat) => (
+                      <button
+                        key={chat.id}
+                        className={`rail-chats__item ${activeChatId === chat.id ? "rail-chats__item--active" : ""}`}
+                        onClick={() => {
+                          void selectChat(chat.id);
+                          setRailChatsOpen(false);
+                        }}
+                      >
+                        <span className="rail-chats__item-title">{chat.title}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <button
+          className="sidebar-rail__avatar"
+          onClick={() => {
+            setShowProfile(true);
+            setShowAdmin(false);
+            setShowLibrary(false);
+          }}
+          title="Личный кабинет"
+        >
+          {user.avatar_url ? (
+            <img className="sidebar-rail__avatar-img" src={user.avatar_url} alt="Фото профиля" />
+          ) : (
+            <span className="sidebar-rail__avatar-letter">{user.email.slice(0, 1).toUpperCase()}</span>
+          )}
+        </button>
+      </nav>
+
       <aside
         className={`sidebar ${sidebarOpen ? "sidebar--open" : ""}`}
+        style={{ width: sidebarWidth }}
         onPointerDown={onSidebarPointerDown}
         onPointerMove={onSidebarPointerMove}
         onPointerUp={finishSidebarDrag}
         onPointerCancel={clearSidebarDrag}
       >
+        <div
+          className="sidebar__resizer"
+          onPointerDown={startSidebarResize}
+          onPointerMove={moveSidebarResize}
+          onPointerUp={endSidebarResize}
+          onPointerCancel={endSidebarResize}
+        />
         <div className="sidebar__header">
           <span className="sidebar__brand">ADA</span>
           <div className="sidebar__actions">
+            <button
+              type="button"
+              className="sidebar__collapse-btn"
+              onClick={toggleSidebar}
+              aria-label="Скрыть панель"
+              title="Скрыть панель"
+            >
+              <svg className="collapse-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M9 22H15C20 22 22 20 22 15V9C22 4 20 2 15 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M9 2V22" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
             <button
               className="sidebar__close-btn"
               onClick={() => setSidebarOpen(false)}
@@ -683,30 +906,15 @@ export default function App() {
             >
               ✕
             </button>
-            <button
-              className="theme-toggle"
-              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-              title={theme === "dark" ? "Переключить на светлую тему" : "Переключить на тёмную тему"}
-            >
-              {theme === "dark" ? "☀️" : "🌙"}
-            </button>
-            <button className="logout-btn" onClick={logout} title={`Выйти (${user.email})`}>
-              Выйти
-            </button>
           </div>
         </div>
 
-        <button
-          type="button"
-          className="sidebar__user"
-          onClick={() => {
-            setSidebarOpen(false);
-            setShowAdmin(false);
-            setShowProfile(true);
-          }}
-          title="Личный кабинет"
-        >
-          <span className="sidebar__user-avatar">{user.email.slice(0, 1).toUpperCase()}</span>
+<button className="sidebar__user" onClick={() => { setShowProfile(true); setShowAdmin(false); setShowLibrary(false); setSidebarOpen(false); }} title="Личный кабинет">
+          {user.avatar_url ? (
+            <img className="sidebar__user-avatar" src={user.avatar_url} alt="Фото профиля" />
+          ) : (
+            <span className="sidebar__user-avatar">{user.email.slice(0, 1).toUpperCase()}</span>
+          )}
           <div className="sidebar__user-info">
             <div className="sidebar__user-name" title={user.email}>
               {user.email}
@@ -723,14 +931,7 @@ export default function App() {
 
         {user.role === "admin" && (
           <div className="sidebar__section">
-            <button
-              className="btn--admin"
-              onClick={() => {
-                setSidebarOpen(false);
-                setShowProfile(false);
-                setShowAdmin((v) => !v);
-              }}
-            >
+<button className="btn--admin" onClick={() => { setSidebarOpen(false); setShowAdmin((v) => !v); setShowProfile(false); setShowLibrary(false); }}>
               {showAdmin ? "◀ К чату" : "⚙ Админ-панель"}
             </button>
           </div>
@@ -739,7 +940,26 @@ export default function App() {
         <div className="sidebar__section sidebar__section--scroll">
           <div className="sidebar__section-title">Чаты</div>
           <button className="btn--new-chat" onClick={() => void newChat()}>
-            ＋ Новый чат
+            <svg className="new-chat-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M11 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22H15C20 22 22 20 22 15V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16.0399 3.01928L8.15988 10.8993C7.85988 11.1993 7.55988 11.7893 7.49988 12.2193L7.06988 15.2293C6.90988 16.3193 7.67988 17.0793 8.76988 16.9293L11.7799 16.4993C12.1999 16.4393 12.7899 16.1393 13.0999 15.8393L20.9799 7.95928C22.3399 6.59928 22.9799 5.01928 20.9799 3.01928C18.9799 1.01928 17.3999 1.65928 16.0399 3.01928Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M14.9102 4.15039C15.5802 6.54039 17.4502 8.41039 19.8502 9.09039" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Новый чат
+          </button>
+          <button
+            type="button"
+            className="btn--new-chat"
+            onClick={() => { setSidebarOpen(false); setShowLibrary((v) => !v); setShowAdmin(false); setShowProfile(false); }}
+            title="Библиотека сгенерированных файлов"
+          >
+            <svg className="new-chat-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M21 7V17C21 20 19.5 22 16 22H8C4.5 22 3 20 3 17V7C3 4 4.5 2 8 2H16C19.5 2 21 4 21 7Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M15.5 2V9.85999C15.5 10.3 14.98 10.52 14.66 10.23L12.34 8.09003C12.15 7.91003 11.85 7.91003 11.66 8.09003L9.34003 10.23C9.02003 10.52 8.5 10.3 8.5 9.85999V2H15.5Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M13.25 14H17.5" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M9 18H17.5" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Библиотека
           </button>
           {chatsLoading ? (
             <div className="empty">Загружаем чаты…</div>
@@ -776,6 +996,11 @@ export default function App() {
                           void renameChatNow(chat);
                         }}
                       >
+                        <svg className="doc-menu__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                          <path d="M13.26 3.59924L5.04997 12.2892C4.73997 12.6192 4.43997 13.2692 4.37997 13.7192L4.00997 16.9592C3.87997 18.1292 4.71997 18.9292 5.87997 18.7292L9.09997 18.1792C9.54997 18.0992 10.18 17.7692 10.49 17.4292L18.7 8.73924C20.12 7.23924 20.76 5.52924 18.55 3.43924C16.35 1.36924 14.68 2.09924 13.26 3.59924Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+                          <path d="M11.89 5.05078C12.32 7.81078 14.56 9.92078 17.34 10.2008" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+                          <path d="M3 22H21" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
                         Переименовать
                       </button>
                       <button
@@ -786,6 +1011,10 @@ export default function App() {
                           void removeChat(chat.id);
                         }}
                       >
+                        <svg className="doc-menu__icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                          <path d="M21.0699 5.23C19.4599 5.07 17.8499 4.95 16.2299 4.86V4.85L16.0099 3.55C15.8599 2.63 15.6399 1.25 13.2999 1.25H10.6799C8.34991 1.25 8.12991 2.57 7.96991 3.54L7.75991 4.82C6.82991 4.88 5.89991 4.94 4.96991 5.03L2.92991 5.23C2.50991 5.27 2.20991 5.64 2.24991 6.05C2.28991 6.46 2.64991 6.76 3.06991 6.72L5.10991 6.52C10.3499 6 15.6299 6.2 20.9299 6.73C20.9599 6.73 20.9799 6.73 21.0099 6.73C21.3899 6.73 21.7199 6.44 21.7599 6.05C21.7899 5.64 21.4899 5.27 21.0699 5.23Z" />
+                          <path d="M19.23 8.14C18.99 7.89 18.66 7.75 18.32 7.75H5.67999C5.33999 7.75 4.99999 7.89 4.76999 8.14C4.53999 8.39 4.40999 8.73 4.42999 9.08L5.04999 19.34C5.15999 20.86 5.29999 22.76 8.78999 22.76H15.21C18.7 22.76 18.84 20.87 18.95 19.34L19.57 9.09C19.59 8.73 19.46 8.39 19.23 8.14ZM13.66 17.75H10.33C9.91999 17.75 9.57999 17.41 9.57999 17C9.57999 16.59 9.91999 16.25 10.33 16.25H13.66C14.07 16.25 14.41 16.59 14.41 17C14.41 17.41 14.07 17.75 13.66 17.75ZM14.5 13.75H9.49999C9.08999 13.75 8.74999 13.41 8.74999 13C8.74999 12.59 9.08999 12.25 9.49999 12.25H14.5C14.91 12.25 15.25 12.59 15.25 13C15.25 13.41 14.91 13.75 14.5 13.75Z" />
+                        </svg>
                         Удалить чат
                       </button>
                     </div>
@@ -875,6 +1104,10 @@ export default function App() {
                           void removeDocument(doc);
                         }}
                       >
+                        <svg className="doc-menu__icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                          <path d="M21.0699 5.23C19.4599 5.07 17.8499 4.95 16.2299 4.86V4.85L16.0099 3.55C15.8599 2.63 15.6399 1.25 13.2999 1.25H10.6799C8.34991 1.25 8.12991 2.57 7.96991 3.54L7.75991 4.82C6.82991 4.88 5.89991 4.94 4.96991 5.03L2.92991 5.23C2.50991 5.27 2.20991 5.64 2.24991 6.05C2.28991 6.46 2.64991 6.76 3.06991 6.72L5.10991 6.52C10.3499 6 15.6299 6.2 20.9299 6.73C20.9599 6.73 20.9799 6.73 21.0099 6.73C21.3899 6.73 21.7199 6.44 21.7599 6.05C21.7899 5.64 21.4899 5.27 21.0699 5.23Z" />
+                          <path d="M19.23 8.14C18.99 7.89 18.66 7.75 18.32 7.75H5.67999C5.33999 7.75 4.99999 7.89 4.76999 8.14C4.53999 8.39 4.40999 8.73 4.42999 9.08L5.04999 19.34C5.15999 20.86 5.29999 22.76 8.78999 22.76H15.21C18.7 22.76 18.84 20.87 18.95 19.34L19.57 9.09C19.59 8.73 19.46 8.39 19.23 8.14ZM13.66 17.75H10.33C9.91999 17.75 9.57999 17.41 9.57999 17C9.57999 16.59 9.91999 16.25 10.33 16.25H13.66C14.07 16.25 14.41 16.59 14.41 17C14.41 17.41 14.07 17.75 13.66 17.75ZM14.5 13.75H9.49999C9.08999 13.75 8.74999 13.41 8.74999 13C8.74999 12.59 9.08999 12.25 9.49999 12.25H14.5C14.91 12.25 15.25 12.59 15.25 13C15.25 13.41 14.91 13.75 14.5 13.75Z" />
+                        </svg>
                         Удалить файл
                       </button>
                     </div>
@@ -893,7 +1126,23 @@ export default function App() {
       />
 
       {showProfile ? (
-        <ProfilePanel user={user} onBack={() => setShowProfile(false)} onDeleted={logout} />
+        <ProfilePanel
+          user={user}
+          onBack={() => setShowProfile(false)}
+          onUserUpdated={setUser}
+          theme={theme}
+          onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          onLogout={logout}
+          onDeleted={logout}
+        />
+      ) : showLibrary ? (
+        <Library
+          documents={documents}
+          onBack={() => setShowLibrary(false)}
+          onOpen={openDocumentById}
+          onDownload={saveDocument}
+          onDelete={removeDocument}
+        />
       ) : showAdmin ? (
         <AdminPanel onBack={() => setShowAdmin(false)} currentUserId={user.id} />
       ) : (
@@ -910,9 +1159,9 @@ export default function App() {
             <button
               type="button"
               className="chat__menu-btn"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="Открыть меню"
-              title="Меню"
+              onClick={() => toggleSidebar()}
+              aria-label={sidebarCollapsed ? "Показать боковую панель" : "Скрыть боковую панель"}
+              title={sidebarCollapsed ? "Показать боковую панель" : "Скрыть боковую панель"}
             >
               <span className="chat__menu-icon" aria-hidden="true">
                 <i />
@@ -1052,7 +1301,14 @@ export default function App() {
               disabled={loading || !input.trim()}
               aria-label="Отправить сообщение"
             >
-              {loading ? "…" : "↑"}
+              {loading ? (
+                "…"
+              ) : (
+                <svg className="chat__send-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M12 19V5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M6 11L12 5L18 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
             </button>
           </form>
         </main>

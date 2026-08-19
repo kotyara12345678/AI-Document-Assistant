@@ -52,7 +52,7 @@ def _scripted_functions(monkeypatch, script):
     """
     calls = []
 
-    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         calls.append(
             {
                 "messages": messages,
@@ -254,7 +254,7 @@ def test_agent_requires_authentication():
 
 def test_agent_degrades_when_gigachat_fails(client, monkeypatch):
     """An LLM outage degrades to an honest message instead of a 500."""
-    def failing(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def failing(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         raise gemini.GeminiError("boom")
 
     monkeypatch.setattr(gemini, "chat_with_functions", failing)
@@ -1089,7 +1089,7 @@ def test_agent_memory_restores_context_across_turns(client, monkeypatch, user_id
     final1 = {"content": "создал"}
     final2 = {"content": "ok"}
 
-    def fake1(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake1(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         return (create_msg, "s") if messages[-1]["role"] == "user" and "создай" in messages[-1]["content"] else (final1, None)
 
     monkeypatch.setattr(gemini, "chat_with_functions", fake1)
@@ -1098,7 +1098,7 @@ def test_agent_memory_restores_context_across_turns(client, monkeypatch, user_id
 
     calls2: list = []
 
-    def fake2(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake2(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         calls2.append(list(messages))
         return final2, None
 
@@ -1119,7 +1119,7 @@ def test_new_chat_has_clean_context(client, monkeypatch, user_id):
     """A brand-new chat starts with no injected task/document context (D)."""
     calls: list = []
 
-    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         calls.append(list(messages))
         return {"content": "привет"}, None
 

@@ -79,7 +79,7 @@ def test_admin_stats_never_leak_document_or_chat_content(client, identity, monke
     assert chat.status_code == 201, chat.text
     chat_id = chat.json()["id"]
 
-    def fake(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         return "Ответ."
 
     monkeypatch.setattr(gemini, "generate_answer", fake)

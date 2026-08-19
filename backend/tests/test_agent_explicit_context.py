@@ -81,7 +81,7 @@ def _insert_document(user_id: int, filename: str, content: str, file_type: str =
 def _scripted_functions(monkeypatch, script):
     """Queue (message, state_id) pairs; only consulted if the model is reached."""
 
-    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         if not script:
             return {"content": "ok"}, None
         return script.pop(0)

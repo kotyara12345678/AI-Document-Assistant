@@ -74,7 +74,7 @@ def _scripted_functions(monkeypatch, script):
     """Queue (message, state_id) pairs; record every outgoing request."""
     calls = []
 
-    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None):
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
         calls.append(
             {
                 "messages": messages,

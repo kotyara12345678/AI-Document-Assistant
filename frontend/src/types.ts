@@ -3,6 +3,15 @@ export interface UserOut {
   email: string;
   role: string;
   created_at: string;
+  avatar_url?: string | null;
+}
+
+export interface UsageStats {
+  total_tokens: number;
+  tokens_today: number;
+  tokens_7d: number;
+  tokens_30d: number;
+  requests: number;
 }
 
 export type UserRole = "user" | "moderator" | "admin";
@@ -69,6 +78,8 @@ export interface DocumentOut {
   file_size: number;
   content_length: number;
   created_at: string;
+  chat_id?: number | null;
+  source_file_id?: number | null;
 }
 
 export interface DocumentContent {

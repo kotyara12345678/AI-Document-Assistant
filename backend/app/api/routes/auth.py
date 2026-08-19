@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
@@ -19,12 +19,16 @@ from app.core.security import (
     verify_password,
 )
 from app.database.session import get_db
+from app.models.usage_log import UsageLog
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
+    ChangePasswordRequest,
     LoginRequest,
     PasswordChangeRequest,
     RegisterRequest,
+    UpdateProfileRequest,
+    UsageStatsOut,
     UserOut,
 )
 
@@ -158,3 +162,80 @@ def change_password(
     user.password_hash = hash_password(payload.new_password)
     db.commit()
     return {"changed": True}
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(
+    payload: UpdateProfileRequest,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    """Change the authenticated user's profile picture."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    user.avatar_url = payload.avatar_url
+    db.commit()
+    db.refresh(user)
+    return UserOut.model_validate(user)
+
+
+@router.patch("/me/password", response_model=UserOut)
+def change_me_password(
+    payload: ChangePasswordRequest,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    """Verify the current password and replace it with a new one.
+
+    The new password replaces the current one in the same commit, so the
+    verification and update are atomic enough for this single-user turn.
+    """
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Current password is incorrect",
+        )
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    db.refresh(user)
+    return UserOut.model_validate(user)
+
+
+@router.get("/me/usage", response_model=UsageStatsOut)
+def usage_stats(
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> UsageStatsOut:
+    """Aggregated token usage for the authenticated user."""
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_start = today_start - timedelta(days=7)
+    month_start = today_start - timedelta(days=30)
+
+    def _usage_since(since: datetime | None = None) -> tuple[int, int]:
+        query = db.query(
+            func.coalesce(func.sum(UsageLog.tokens_used), 0),
+            func.count(UsageLog.id),
+        ).filter(UsageLog.user_id == user_id)
+        if since is not None:
+            query = query.filter(UsageLog.created_at >= since)
+        total, count = query.first()
+        return int(total or 0), int(count or 0)
+
+    total_tokens, total_requests = _usage_since()
+    tokens_today, _ = _usage_since(today_start)
+    tokens_7d, _ = _usage_since(week_start)
+    tokens_30d, _ = _usage_since(month_start)
+
+    return UsageStatsOut(
+        total_tokens=total_tokens,
+        tokens_today=tokens_today,
+        tokens_7d=tokens_7d,
+        tokens_30d=tokens_30d,
+        requests=total_requests,
+    )

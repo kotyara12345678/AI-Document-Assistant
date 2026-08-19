@@ -92,7 +92,7 @@ def test_chat_rate_limit_per_user(client, monkeypatch):
     """Per-user chat burst guard kicks in without breaking normal use."""
     from app.services import gemini
 
-    def fake(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         return "Ответ."
 
     monkeypatch.setattr(gemini, "generate_answer", fake)
@@ -249,7 +249,7 @@ def test_chat_with_foreign_document_ids_scoped(client, monkeypatch):
     assert upload.status_code == 201, upload.text
     doc_id = upload.json()[0]["id"]
 
-    def fake(prompt, system_instruction=None, client=None, history=None, summary=None):
+    def fake(prompt, system_instruction=None, client=None, history=None, summary=None, usage_hook=None):
         return "Ответ."
 
     monkeypatch.setattr(gemini, "generate_answer", fake)
