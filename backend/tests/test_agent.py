@@ -81,9 +81,11 @@ def test_agent_answers_without_tool_call(client, monkeypatch):
     assert data["tool_calls"] == []
     assert data["tool_results"] == []
 
-    # The function spec must have been advertised even when unused.
+    # INTENT GATE: a greeting carries no document signal, so the document tool
+    # spec is deliberately withheld — the model cannot call a document tool for
+    # chit-chat. (Previously the full spec was advertised even here.)
     assert len(calls) == 1
-    assert calls[0]["functions"] == agent_service.functions_spec()
+    assert calls[0]["functions"] is None
     assert calls[0]["function_call"] == "auto"
     assert calls[0]["functions_state_id"] is None
 

@@ -40,6 +40,13 @@ from app.schemas.agent import (
     AgentToolResult,
 )
 from app.services import agent_state, gemini
+from app.services.agent_intent import (
+    DOCUMENT as DOCUMENT_INTENT,
+    UNCERTAIN as UNCERTAIN_INTENT,
+    is_creation_request,
+    resolve_intent,
+    tools_enabled,
+)
 from app.services.chat import (
     DEFAULT_CHAT_TITLE,
     _make_title,
@@ -251,6 +258,16 @@ SYSTEM_INSTRUCTION = (
     "download links. A download link must come only from the download_url the "
     "tool actually returned; a created/edited file must come only from a "
     "success: true tool result with a real document_id. "
+    "INTENT GATE: before choosing any tool, decide whether this message is "
+    "about the user's documents at all. Pure greetings ('привет', "
+    "'здравствуйте', 'добрый день'), politeness ('спасибо', 'пожалуйста', "
+    "'понятно'), small talk ('как дела?'), questions about the assistant "
+    "itself ('что ты умеешь?', 'расскажи, на что ты способен') and "
+    "general-knowledge questions are answered directly in plain text — do "
+    "NOT search, read, list, create, edit or compare anything for them. "
+    "Document tools exist ONLY for requests about the user's files, facts "
+    "that live in those files, or file creation/edit/compare/list actions. "
+    "Never call a document tool for a message that carries no such signal. "
 )
 
 # Short excerpt handed back to the model per matched document.
@@ -648,6 +665,20 @@ class AgentService:
             # Current user turn (the system/history above are context only).
             messages.append({"role": "user", "content": request.question})
 
+            # INTENT GATE: a message with no real document signal (a greeting,
+            # thanks, small talk, a question about this assistant, pure general
+            # knowledge) must never touch the document tools. We simply omit the
+            # ``functions`` payload for such a turn — an LLM cannot call a tool
+            # it was not given — so «привет» can never accidentally fire
+            # search_documents/create_document/edit_document and end up as
+            # "Файл не был создан: данных для подготовки документа не хватает".
+            allow_tools = tools_enabled(
+                request.question,
+                has_document_context=_has_active_document_context(
+                    request, state, document_ids
+                ),
+            )
+
             calls: list[AgentToolCall] = []
             results: list[AgentToolResult] = []
             agent_steps: list[AgentStep] = []
@@ -665,7 +696,7 @@ class AgentService:
                 for _ in range(max(1, settings.AGENT_MAX_TOOL_ROUNDS)):
                     message, functions_state_id = gemini.chat_with_functions(
                         messages,
-                        functions=self.functions_spec(),
+                        functions=self.functions_spec() if allow_tools else None,
                         functions_state_id=functions_state_id,
                         usage_hook=_usage_hook,
                     )
@@ -1848,6 +1879,30 @@ def _document_filter(request: AgentRequest) -> list[int] | None:
     return None
 
 
+def _has_active_document_context(
+    request: AgentRequest, state: dict, document_ids: list[int] | None
+) -> bool:
+    """Whether this chat already has an active document context.
+
+    Used by the intent gate: an UNCERTAIN follow-up (e.g. "продолжай",
+    "а второй пункт?") still keeps the document tools when the user pinned
+    documents for this turn or a previous tool turn left discovered documents /
+    a running task in the persisted agent state.
+    """
+    if document_ids:
+        return True
+    if (state.get("documents") or []) or (state.get("sources") or []):
+        return True
+    task = state.get("task") or {}
+    return bool(
+        task.get("retrieval_completed")
+        or task.get("documents_read")
+        or task.get("generation_requested")
+        or task.get("document_created")
+        or task.get("created_document_id")
+    )
+
+
 def _resolve_explicit_file_id(
     request: AgentRequest, arguments: dict, db: Session, user_id: int
 ) -> int | None:
@@ -2137,6 +2192,12 @@ def _sanitize_final_answer(
     actually created. We strip download URLs that do not point to a real file
     created this turn, and if no file was created at all we replace a
     fabricated success claim with an honest statement.
+
+    INTENT-GATED: the replacement is only the file-focused "was not created /
+    data is missing" phrasing when the request genuinely asked for document
+    creation. Greetings/small-talk (whose prose may contain words like "готов"
+    meaning "ready to help") are never rewritten that way, and non-creation
+    document requests get a neutral statement instead.
     """
     if not answer or not answer.strip():
         return answer
@@ -2151,8 +2212,31 @@ def _sanitize_final_answer(
         # A real file exists this turn; keep the model's prose otherwise.
         return sanitized
     if _looks_like_success_claim(sanitized):
-        return _honest_creation_failure(results, question)
+        intent = resolve_intent(question)
+        if intent == DOCUMENT_INTENT and is_creation_request(question):
+            # The user asked for a file that was NOT really created: replace the
+            # fabricated success claim with the honest outcome.
+            return _honest_creation_failure(results, question)
+        if intent == UNCERTAIN_INTENT or intent == DOCUMENT_INTENT:
+            # A non-creation request ("приведи в пример", "найди вариант",
+            # "а что дальше?"): a "не хватает данных для подготовки документа"
+            # message would be meaningless here. Say plainly that nothing was
+            # created, without blaming missing document data.
+            return _nothing_was_created()
+        # CONVERSATIONAL intent: the model answered normal chit-chat; a claim
+        # word like "готов" in "Привет! Готов помочь" must NOT be rewritten
+        # into a "file was not created" message.
+        return sanitized
     return sanitized
+
+
+def _nothing_was_created() -> str:
+    """Neutral, honest fallback for a claimed-but-never-created file when the
+    request is NOT a document-creation request."""
+    return (
+        "Не получилось выполнить этот запрос — ничего не было создано. "
+        "Уточните, пожалуйста, что нужно сделать."
+    )
 
 
 def _derive_created_documents(results: list[AgentToolResult]) -> list[dict]:
