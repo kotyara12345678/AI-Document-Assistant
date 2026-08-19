@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import CompareViewer from "../components/CompareViewer";
 import type { CompareResponse } from "../types";
+import { renderWithI18n } from "../test/render";
 
 function makeData(overrides: Partial<CompareResponse> = {}): CompareResponse {
   return {
@@ -38,7 +39,7 @@ function makeData(overrides: Partial<CompareResponse> = {}): CompareResponse {
 
 describe("CompareViewer", () => {
   it("renders the file names and summary", () => {
-    render(<CompareViewer data={makeData()} />);
+    renderWithI18n(<CompareViewer data={makeData()} />);
     expect(screen.getByText("+1 добавлено")).toBeTruthy();
     expect(screen.getByText("−1 удалено")).toBeTruthy();
     expect(screen.getByText("~1 изменено")).toBeTruthy();
@@ -46,12 +47,12 @@ describe("CompareViewer", () => {
   });
 
   it("shows an empty state when documents are identical", () => {
-    render(<CompareViewer data={makeData({ equal: true })} />);
+    renderWithI18n(<CompareViewer data={makeData({ equal: true })} />);
     expect(screen.getByText("Тексты документов совпадают")).toBeTruthy();
   });
 
   it("highlights changed and shared lines", () => {
-    const { container } = render(<CompareViewer data={makeData()} />);
+    const { container } = renderWithI18n(<CompareViewer data={makeData()} />);
     const rows = container.querySelectorAll(".compare__row");
     // equal + replace + equal
     expect(rows.length).toBe(3);
@@ -61,7 +62,7 @@ describe("CompareViewer", () => {
   });
 
   it("shows the truncation warning when diff was capped", () => {
-    render(<CompareViewer data={makeData({ truncated: true })} />);
+    renderWithI18n(<CompareViewer data={makeData({ truncated: true })} />);
     expect(screen.getByText(/показаны первые 4000 строк/)).toBeTruthy();
   });
 });

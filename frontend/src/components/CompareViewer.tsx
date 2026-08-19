@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { CompareResponse } from "../types";
 import { diffLines, mergeSegs } from "../diff";
 import type { WordDiffSeg } from "../diff";
+import { useI18n } from "../i18n";
 
 interface CompareViewerProps {
   data: CompareResponse;
@@ -20,26 +21,40 @@ interface CompareViewerProps {
  * stays naturally in sync without any custom scroll plumbing.
  */
 export default function CompareViewer({ data }: CompareViewerProps) {
+  const { t } = useI18n();
   const rows = useMemo(() => buildRows(data), [data]);
+
+  const rowLabel = (kind: RowKind): string => {
+    switch (kind) {
+      case "delete":
+        return t("compareViewer.rowDeleted");
+      case "insert":
+        return t("compareViewer.rowAdded");
+      case "replace":
+        return t("compareViewer.rowChanged");
+      default:
+        return t("compareViewer.rowContext");
+    }
+  };
 
   return (
     <>
       <div className="compare__summary">
         <span className="compare__summary-item compare__summary-item--add">
-          +{data.summary.added_lines} добавлено
+          {t("compareViewer.added", { count: data.summary.added_lines })}
         </span>
         <span className="compare__summary-item compare__summary-item--del">
-          −{data.summary.removed_lines} удалено
+          {t("compareViewer.removed", { count: data.summary.removed_lines })}
         </span>
         <span className="compare__summary-item compare__summary-item--chg">
-          ~{data.summary.changed_lines} изменено
+          {t("compareViewer.changed", { count: data.summary.changed_lines })}
         </span>
         <span className="compare__summary-item compare__summary-item--same">
-          ={data.summary.unchanged_lines} без изменений
+          {t("compareViewer.unchanged", { count: data.summary.unchanged_lines })}
         </span>
         {data.truncated && (
           <span className="compare__summary-item compare__summary-item--warn">
-            показаны первые {data.limit} строк
+            {t("compareViewer.truncated", { count: data.limit })}
           </span>
         )}
       </div>
@@ -47,10 +62,12 @@ export default function CompareViewer({ data }: CompareViewerProps) {
       <div className="compare__body">
         {data.equal ? (
           <div className="compare__empty">
-            <div className="compare__empty-title">Тексты документов совпадают</div>
+            <div className="compare__empty-title">{t("compareViewer.equalTitle")}</div>
             <div className="compare__empty-sub">
-              В содержимом «{data.left.original_filename}» и «{data.right.original_filename}» нет
-              различий.
+              {t("compareViewer.equalSub", {
+                a: data.left.original_filename,
+                b: data.right.original_filename,
+              })}
             </div>
           </div>
         ) : (
@@ -188,19 +205,6 @@ function range(start: number, end: number): number[] {
   const out: number[] = [];
   for (let i = start; i < end; i += 1) out.push(i + 1);
   return out;
-}
-
-function rowLabel(kind: RowKind): string {
-  switch (kind) {
-    case "delete":
-      return "Удалённые строки";
-    case "insert":
-      return "Добавленные строки";
-    case "replace":
-      return "Изменённые строки";
-    default:
-      return "Контекст";
-  }
 }
 
 function Cell({

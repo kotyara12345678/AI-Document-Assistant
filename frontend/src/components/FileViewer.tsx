@@ -6,6 +6,7 @@ import type { DocumentContent } from "../types";
 import { documentFileSource } from "../api";
 import { highlightSegments, type HighlightSegment } from "../highlight";
 import { renderMarkdown } from "../markdown";
+import { useI18n } from "../i18n";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 // The worker runs PDF parsing off the UI thread. Bundling it as a plain URL
@@ -86,6 +87,7 @@ async function firstPageWithText(pdf: PDFDocumentProxy, snippet: string): Promis
 }
 
 function PdfViewer({ docId, snippets }: { docId: number; snippets: string[] }) {
+  const { t } = useI18n();
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
@@ -223,7 +225,7 @@ function PdfViewer({ docId, snippets }: { docId: number; snippets: string[] }) {
           <button
             className="viewer__btn viewer__btn--zoom"
             onClick={() => zoomBy(-0.25)}
-            title="Уменьшить масштаб"
+            title={t("viewer.zoomOut")}
           >
             −
           </button>
@@ -231,7 +233,7 @@ function PdfViewer({ docId, snippets }: { docId: number; snippets: string[] }) {
           <button
             className="viewer__btn viewer__btn--zoom"
             onClick={() => zoomBy(0.25)}
-            title="Увеличить масштаб"
+            title={t("viewer.zoomIn")}
           >
             +
           </button>
@@ -241,21 +243,21 @@ function PdfViewer({ docId, snippets }: { docId: number; snippets: string[] }) {
             className={`viewer__btn${fitMode === "width" ? " viewer__btn--active" : ""}`}
             onClick={() => setFit("width")}
             disabled={!pageDims}
-            title="По ширине"
+            title={t("viewer.fitWidth")}
           >
-            По ширине
+            {t("viewer.fitWidth")}
           </button>
           <button
             className={`viewer__btn${fitMode === "page" ? " viewer__btn--active" : ""}`}
             onClick={() => setFit("page")}
             disabled={!pageDims}
-            title="Вся страница"
+            title={t("viewer.fitPage")}
           >
-            Вся страница
+            {t("viewer.fitPage")}
           </button>
         </div>
         <div className="viewer__pdf-controls">
-          <span className="viewer__page-info">Страница</span>
+          <span className="viewer__page-info">{t("viewer.page")}</span>
           <input
             className="viewer__page-input"
             type="number"
@@ -267,9 +269,9 @@ function PdfViewer({ docId, snippets }: { docId: number; snippets: string[] }) {
               if (e.key === "Enter") submitJump();
             }}
           />
-          <span className="viewer__page-info">из {numPages || "…"}</span>
+          <span className="viewer__page-info">{t("viewer.of", { n: numPages || "…" })}</span>
           <button className="viewer__btn" onClick={submitJump} disabled={numPages === 0}>
-            Перейти
+            {t("viewer.go")}
           </button>
         </div>
       </div>
@@ -281,9 +283,9 @@ function PdfViewer({ docId, snippets }: { docId: number; snippets: string[] }) {
           <Document
             file={file}
             onLoadSuccess={onLoadSuccess}
-            onLoadError={(err) => setError(err instanceof Error ? err.message : "Не удалось загрузить PDF")}
-            loading={<div className="viewer__loading">Загружаем PDF…</div>}
-            error={<div className="viewer__error">Не удалось открыть PDF.</div>}
+            onLoadError={(err) => setError(err instanceof Error ? err.message : t("viewer.pdfLoadError"))}
+            loading={<div className="viewer__loading">{t("viewer.loadingPdf")}</div>}
+            error={<div className="viewer__error">{t("viewer.pdfOpenError")}</div>}
           >
             {numPages > 0 &&
               Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
@@ -519,6 +521,7 @@ function TxtViewer({ raw, highlights }: { raw: string; highlights: string[] }) {
 }
 
 export default function FileViewer({ doc, highlights, loading, onClose }: FileViewerProps) {
+  const { t, formatChars } = useI18n();
   const contentRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState<number | null>(null);
   const [resizing, setResizing] = useState(false);
@@ -586,7 +589,7 @@ export default function FileViewer({ doc, highlights, loading, onClose }: FileVi
       <div
         className={`viewer__resize${resizing ? " viewer__resize--dragging" : ""}`}
         onPointerDown={onResizeStart}
-        aria-label="Изменить ширину панели просмотра"
+        aria-label={t("viewer.resizeAria")}
       />
       <div className="viewer__header">
         <div className="viewer__file">
@@ -600,20 +603,20 @@ export default function FileViewer({ doc, highlights, loading, onClose }: FileVi
                   : "📄"}
           </span>
           <div className="viewer__file-info">
-            <div className="viewer__file-name">{doc?.original_filename ?? "Загрузка…"}</div>
+            <div className="viewer__file-name">{doc?.original_filename ?? t("viewer.loadingName")}</div>
             {doc && (
               <div className="viewer__file-meta">
                 <span>
                   {doc.file_type.toUpperCase()} · {formatChars(doc.content_length)}
                 </span>
                 {highlights.length > 0 && (
-                  <span className="viewer__file-meta-hit">совпадение открыто в файле</span>
+                  <span className="viewer__file-meta-hit">{t("viewer.metaHit")}</span>
                 )}
               </div>
             )}
           </div>
         </div>
-        <button className="viewer__close" onClick={onClose} aria-label="Закрыть просмотр">
+        <button className="viewer__close" onClick={onClose} aria-label={t("viewer.closeAria")}>
           ✕
         </button>
       </div>
@@ -623,11 +626,11 @@ export default function FileViewer({ doc, highlights, loading, onClose }: FileVi
         ref={contentRef}
       >
         {loading ? (
-          <div className="viewer__loading">Загружаем содержимое…</div>
+          <div className="viewer__loading">{t("viewer.loadingContent")}</div>
         ) : !doc ? null : isPdf ? (
           <PdfViewer key={doc.id} docId={doc.id} snippets={highlights} />
         ) : !rawText.trim() ? (
-          <div className="viewer__error">Нет извлекаемого текста.</div>
+          <div className="viewer__error">{t("viewer.noText")}</div>
         ) : doc.file_type === "docx" || doc.file_type === "odt" ? (
           <DocxViewer raw={rawText} highlights={highlights} />
         ) : doc.file_type === "md" ? (
@@ -638,9 +641,4 @@ export default function FileViewer({ doc, highlights, loading, onClose }: FileVi
       </div>
     </aside>
   );
-}
-
-function formatChars(n: number): string {
-  if (n < 1000) return `${n} симв.`;
-  return `${(n / 1000).toFixed(1)} тыс. симв.`;
 }

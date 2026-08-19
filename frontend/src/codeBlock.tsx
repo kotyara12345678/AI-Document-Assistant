@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "./i18n";
 
 export interface CodeBlockResult {
   before: string;
@@ -116,6 +117,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 export default function CopyableBlock({ result }: { result: CodeBlockResult }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     if (await copyText(result.code)) {
@@ -129,7 +131,7 @@ export default function CopyableBlock({ result }: { result: CodeBlockResult }) {
       <div className="code-block">
         <div className="code-block__toolbar">
           <button type="button" className="code-block__copy" onClick={onCopy}>
-            {copied ? "Скопировано" : "Копировать"}
+            {copied ? t("codeBlock.copied") : t("codeBlock.copy")}
           </button>
         </div>
         <pre className="code-block__pre"><code>{result.code}</code></pre>

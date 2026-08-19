@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import type { UserOut } from "../types";
 import { login, register, setToken } from "../api";
+import { useI18n } from "../i18n";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 type Mode = "login" | "register";
 
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivacy, onOpenCookies }: Props) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<Mode>(initialMode ?? "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -37,12 +40,12 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
     setError(null);
 
     if (mode === "register" && password !== passwordConfirm) {
-      setError("Пароли не совпадают");
+      setError(t("auth.passwordsMismatch"));
       return;
     }
 
     if (mode === "register" && !consent) {
-      setError("Необходимо согласие на обработку персональных данных");
+      setError(t("auth.consentRequired"));
       return;
     }
 
@@ -52,7 +55,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
       setToken(data.access_token);
       onAuthed(data.user);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Произошла ошибка, попробуйте ещё раз");
+      setError(err instanceof Error ? err.message : t("auth.genericError"));
     } finally {
       setBusy(false);
     }
@@ -63,16 +66,17 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
   return (
     <div className="auth">
       <form className="auth__card" onSubmit={submit}>
-        {onBack && (
-          <button type="button" className="auth__back" onClick={onBack}>
-            ← На сайт
-          </button>
-        )}
+        <div className="auth__top-row">
+          {onBack && (
+            <button type="button" className="auth__back" onClick={onBack}>
+              {t("auth.backToSite")}
+            </button>
+          )}
+          <LanguageSwitcher className="auth__lang" />
+        </div>
         <div className="auth__brand">ADA</div>
         <p className="auth__subtitle">
-          {isRegister
-            ? "Создайте аккаунт, чтобы хранить и искать свои документы"
-            : "Войдите, чтобы продолжить работу с документами"}
+          {isRegister ? t("auth.registerSubtitle") : t("auth.loginSubtitle")}
         </p>
 
         <div className="auth__tabs">
@@ -81,20 +85,20 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
             className={`auth__tab ${!isRegister ? "auth__tab--active" : ""}`}
             onClick={() => switchMode("login")}
           >
-            Вход
+            {t("auth.login")}
           </button>
           <button
             type="button"
             className={`auth__tab ${isRegister ? "auth__tab--active" : ""}`}
             onClick={() => switchMode("register")}
           >
-            Регистрация
+            {t("auth.register")}
           </button>
         </div>
 
         <div className="auth__form">
           <label className="auth__field">
-            <span className="auth__label">Электронная почта</span>
+            <span className="auth__label">{t("auth.email")}</span>
             <input
               className="auth__input"
               type="email"
@@ -107,7 +111,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
           </label>
 
           <div className="auth__field">
-            <span className="auth__label">Пароль</span>
+            <span className="auth__label">{t("auth.password")}</span>
             <input
               className="auth__input"
               type={showPassword ? "text" : "password"}
@@ -116,7 +120,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
               autoComplete={isRegister ? "new-password" : "current-password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={isRegister ? "Минимум 8 символов" : "Введите пароль"}
+              placeholder={isRegister ? t("auth.passwordHint") : t("auth.enterPassword")}
             />
             <div className="auth__field-actions">
               <span />
@@ -124,16 +128,16 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
                 type="button"
                 className="auth__show-password"
                 onClick={() => setShowPassword((v) => !v)}
-                title={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                title={showPassword ? t("auth.hidePassword") : t("auth.showPassword")}
               >
-                {showPassword ? "Скрыть пароль" : "Показать пароль"}
+                {showPassword ? t("auth.hidePassword") : t("auth.showPassword")}
               </button>
             </div>
           </div>
 
           {isRegister && (
             <label className="auth__field">
-              <span className="auth__label">Повторите пароль</span>
+              <span className="auth__label">{t("auth.repeatPassword")}</span>
               <input
                 className="auth__input"
                 type={showPassword ? "text" : "password"}
@@ -142,7 +146,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
                 autoComplete="new-password"
                 value={passwordConfirm}
                 onChange={(e) => setPasswordConfirm(e.target.value)}
-                placeholder="Ещё раз тот же пароль"
+                placeholder={t("auth.repeatPasswordPlaceholder")}
               />
             </label>
           )}
@@ -156,7 +160,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
                 onChange={(e) => setConsent(e.target.checked)}
               />
               <span className="auth__consent-text">
-                Я согласен(на) на обработку моих персональных данных в соответствии с{" "}
+                {t("auth.consentText")}{" "}
                 <button
                   type="button"
                   className="auth__link"
@@ -165,7 +169,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
                     onOpenPrivacy?.();
                   }}
                 >
-                  Политикой обработки персональных данных
+                  {t("auth.privacyPolicyLabel")}
                 </button>
                 .
               </span>
@@ -178,25 +182,25 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
             {busy ? (
               <span className="auth__spinner" />
             ) : isRegister ? (
-              "Создать аккаунт"
+              t("auth.createAccount")
             ) : (
-              "Войти"
+              t("auth.loginAction")
             )}
           </button>
 
           <p className="auth__switch-hint">
-            {isRegister ? "Уже есть аккаунт?" : "Нет аккаунта?"}{" "}
+            {isRegister ? t("auth.haveAccount") : t("auth.noAccount")}{" "}
             <button
               type="button"
               className="auth__link"
               onClick={() => switchMode(isRegister ? "login" : "register")}
             >
-              {isRegister ? "Войти" : "Зарегистрироваться"}
+              {isRegister ? t("auth.loginAction") : t("auth.registerLink")}
             </button>
           </p>
 
           <p className="auth__cookie-note">
-            Мы используем файлы cookie для работы и улучшения сервиса.{" "}
+            {t("auth.cookieNote")}{" "}
             <button type="button" className="auth__link" onClick={() => onOpenCookies?.()}>
               Cookie Policy
             </button>

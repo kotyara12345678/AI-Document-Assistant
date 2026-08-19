@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import type { DocumentOut } from "../types";
 import { uploadDocuments } from "../api";
 import { hasSeenUploadWarning, markUploadWarningSeen } from "../consent";
+import { useI18n } from "../i18n";
 import UploadWarning from "./UploadWarning";
 
 interface UploadDropzoneProps {
@@ -10,6 +11,7 @@ interface UploadDropzoneProps {
 }
 
 export default function UploadDropzone({ onUploaded, onError }: UploadDropzoneProps) {
+  const { t } = useI18n();
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [warningPending, setWarningPending] = useState<File[] | null>(null);
@@ -22,12 +24,12 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
         const docs = await uploadDocuments(files);
         docs.forEach((doc) => onUploaded(doc));
       } catch (err) {
-        onError(err instanceof Error ? err.message : "Не удалось загрузить файл");
+        onError(err instanceof Error ? err.message : t("dropzone.error"));
       } finally {
         setBusy(false);
       }
     },
-    [onUploaded, onError]
+    [onUploaded, onError, t]
   );
 
   const upload = useCallback(
@@ -79,17 +81,15 @@ export default function UploadDropzone({ onUploaded, onError }: UploadDropzonePr
       <div className="dropzone__icon">⬆</div>
       <div className="dropzone__title">
         {busy ? (
-          "Загрузка…"
+          t("dropzone.uploading")
         ) : (
           <>
-            <span className="dropzone__label-desktop">Перетащите документы сюда</span>
-            <span className="dropzone__label-mobile">Загрузить документы</span>
+            <span className="dropzone__label-desktop">{t("dropzone.drag")}</span>
+            <span className="dropzone__label-mobile">{t("dropzone.upload")}</span>
           </>
         )}
       </div>
-      <div className="dropzone__hint">
-        PDF, TXT, DOCX, Markdown или ODT — несколько файлов за раз или нажмите для выбора
-      </div>
+      <div className="dropzone__hint">{t("dropzone.hint")}</div>
 
       {warningPending && (
         <UploadWarning

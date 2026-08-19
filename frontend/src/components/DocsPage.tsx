@@ -1,39 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { useI18n } from "../i18n";
 import Reveal from "./Reveal";
+import LanguageSwitcher from "./LanguageSwitcher";
 
-/* ============================================================
-   DATA
-   ============================================================ */
+const BRAND = "ADA — AI Document Assistant";
 
 interface NavItem {
   id: string;
-  label: string;
+  labelKey: string;
 }
 
-const NAV: NavItem[] = [
-  { id: "overview", label: "Обзор" },
-  { id: "getting-started", label: "Как пользоваться" },
-  { id: "features", label: "Возможности" },
-  { id: "benefits", label: "Преимущества" },
-  { id: "privacy", label: "Приватность" },
-  { id: "roadmap", label: "Развитие" },
+const NAV_IDS: NavItem[] = [
+  { id: "overview", labelKey: "docs.navOverview" },
+  { id: "getting-started", labelKey: "docs.navGettingStarted" },
+  { id: "features", labelKey: "docs.navFeatures" },
+  { id: "benefits", labelKey: "docs.navBenefits" },
+  { id: "privacy", labelKey: "docs.navPrivacy" },
+  { id: "roadmap", labelKey: "docs.navRoadmap" },
 ];
-
-const TOC: NavItem[] = [
-  { id: "overview", label: "Обзор" },
-  { id: "getting-started", label: "Как пользоваться" },
-  { id: "features", label: "Возможности" },
-  { id: "benefits", label: "Преимущества" },
-  { id: "privacy", label: "Приватность" },
-  { id: "roadmap", label: "Развитие" },
-];
-
-const SECTION_IDS = TOC.map((t) => t.id);
-
-/* ============================================================
-   UTILITIES
-   ============================================================ */
 
 function CheckItem({ children }: { children: ReactNode }) {
   return (
@@ -81,41 +66,21 @@ function Section({
   );
 }
 
-/* ============================================================
-   ROADMAP
-   ============================================================ */
-
-const ROADMAP = [
-  {
-    status: "Сейчас",
-    tone: "now" as const,
-    title: "Закрытая бета",
-    text: "Зарегистрированные пользователи получают доступ к работе с документами, поиску и AI-помощнику.",
-  },
-  {
-    status: "Бета",
-    tone: "soon" as const,
-    title: "Расширение возможностей",
-    text: "Уточнение инструментов редактирования, расширение форматов, метрики качества ответов.",
-  },
-  {
-    status: "Запуск",
-    tone: "next" as const,
-    title: "Публичный запуск",
-    text: "Полная документация, политики и поддержка для широкой аудитории.",
-  },
-  {
-    status: "Будущее",
-    tone: "later" as const,
-    title: "Новые направления",
-    text: "Направления изучаются; конкретный состав функций будет подтверждён отдельно.",
-  },
-];
-
 function RoadmapBlock() {
+  const { t } = useI18n();
+  const items = useMemo(
+    () => [
+      { status: t("docs.r1Status"), tone: "now" as const, title: t("docs.r1Title"), text: t("docs.r1Text") },
+      { status: t("docs.r2Status"), tone: "soon" as const, title: t("docs.r2Title"), text: t("docs.r2Text") },
+      { status: t("docs.r3Status"), tone: "next" as const, title: t("docs.r3Title"), text: t("docs.r3Text") },
+      { status: t("docs.r4Status"), tone: "later" as const, title: t("docs.r4Title"), text: t("docs.r4Text") },
+    ],
+    [t],
+  );
+
   return (
     <div className="docs-roadmap">
-      {ROADMAP.map((item, i) => (
+      {items.map((item, i) => (
         <div className={`docs-roadmap__item docs-roadmap__item--${item.tone}`} key={item.status}>
           <span className="docs-roadmap__node" />
           <div className="docs-roadmap__body">
@@ -129,10 +94,6 @@ function RoadmapBlock() {
     </div>
   );
 }
-
-/* ============================================================
-   SCROLLSPY
-   ============================================================ */
 
 function useScrollspy(ids: string[]) {
   const [active, setActive] = useState(ids[0] ?? "");
@@ -158,13 +119,17 @@ function useScrollspy(ids: string[]) {
   return active;
 }
 
-/* ============================================================
-   MAIN PAGE
-   ============================================================ */
-
 export default function DocsPage({ onHome }: { onHome: () => void }) {
+  const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
-  const active = useScrollspy(SECTION_IDS);
+
+  const nav = useMemo(
+    () => NAV_IDS.map((item) => ({ id: item.id, label: t(item.labelKey) })),
+    [t],
+  );
+
+  const sectionIds = useMemo(() => nav.map((item) => item.id), [nav]);
+  const active = useScrollspy(sectionIds);
 
   const scrollTo = (id: string) => {
     setMenuOpen(false);
@@ -175,13 +140,13 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
     <div className="docs">
       <header className="docs__nav">
         <div className="docs__nav-inner">
-          <button type="button" className="docs__brand" onClick={onHome} title="На главную">
+          <button type="button" className="docs__brand" onClick={onHome} title={t("docs.homeTitle")}>
             ADA
-            <span className="docs__brand-sub">Documentation</span>
+            <span className="docs__brand-sub">{t("docs.brandSub")}</span>
           </button>
 
           <nav className={`docs__links ${menuOpen ? "docs__links--open" : ""}`}>
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <button
                 type="button"
                 key={item.id}
@@ -193,11 +158,13 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
             ))}
           </nav>
 
+          <LanguageSwitcher />
+
           <button
             type="button"
             className={`docs__burger ${menuOpen ? "docs__burger--open" : ""}`}
             onClick={() => setMenuOpen((v) => !v)}
-            aria-label="Меню"
+            aria-label={t("landing.menu")}
             aria-expanded={menuOpen}
           >
             <i />
@@ -208,8 +175,8 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
 
       <div className="docs__layout">
         <aside className={`docs__toc ${menuOpen ? "docs__toc--open" : ""}`}>
-          <span className="docs__toc-title">Содержание</span>
-          {TOC.map((item) => (
+          <span className="docs__toc-title">{t("docs.tocTitle")}</span>
+          {nav.map((item) => (
             <button
               type="button"
               key={item.id}
@@ -222,33 +189,24 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
           ))}
           <div className="docs__toc-back">
             <button type="button" className="btn btn--ghost" onClick={onHome}>
-              ← На главную
+              {t("docs.backHome")}
             </button>
           </div>
         </aside>
 
         <main className="docs__content">
-          <Section id="overview" kicker="Обзор" title="Ваш помощник для работы с документами">
-            <p className="docs__lead">
-              <strong>ADA — AI Document Assistant</strong> — это сервис, который хранит ваши документы и отвечает на
-              вопросы о них на обычном языке. Не нужно листать файлы в поисках нужной строчки: задайте вопрос своим
-              словами — и получите точный ответ вместе с указанием источника.
-            </p>
-            <p>
-              Загрузите документы в личное пространство, и ADA извлечёт из них текст, поймёт содержание и будет готова
-              отвечать. Спросите «сколько составляет рекламный бюджет на квартал?» или «что написано в договоре о
-              расторжении?» — сервис найдёт нужные фрагменты, соберёт ответ и покажет, из каких именно файлов взята
-              информация.
-            </p>
+          <Section id="overview" kicker={t("docs.overviewKicker")} title={t("docs.overviewTitle")}>
+            <p className="docs__lead">{t("docs.overviewLead1", { brand: BRAND })}</p>
+            <p>{t("docs.overviewLead2")}</p>
             <ul className="docs__list docs__list--grid">
-              <CheckItem>загрузка PDF, DOCX, ODT, TXT и Markdown</CheckItem>
-              <CheckItem>ответы на вопросы о документах</CheckItem>
-              <CheckItem>ответы с указанием источников</CheckItem>
-              <CheckItem>поиск по смыслу и по точным словам</CheckItem>
-              <CheckItem>создание новых документов</CheckItem>
-              <CheckItem>редактирование с сохранением оригинала</CheckItem>
-              <CheckItem>работа с несколькими документами сразу</CheckItem>
-              <CheckItem>история чатов</CheckItem>
+              <CheckItem>{t("docs.checkLoad")}</CheckItem>
+              <CheckItem>{t("docs.checkAsk")}</CheckItem>
+              <CheckItem>{t("docs.checkSources")}</CheckItem>
+              <CheckItem>{t("docs.checkSemantic")}</CheckItem>
+              <CheckItem>{t("docs.checkCreate")}</CheckItem>
+              <CheckItem>{t("docs.checkEdit")}</CheckItem>
+              <CheckItem>{t("docs.checkMulti")}</CheckItem>
+              <CheckItem>{t("docs.checkHistory")}</CheckItem>
             </ul>
             <div className="docs__formats" style={{ marginTop: 28 }}>
               <span className="docs__format">PDF</span>
@@ -261,9 +219,9 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
 
           <Section
             id="getting-started"
-            kicker="Как пользоваться"
-            title="Начните с четырёх простых шагов"
-            sub="Весь сервис устроен так, чтобы им можно было пользоваться без подготовки."
+            kicker={t("docs.gsKicker")}
+            title={t("docs.gsTitle")}
+            sub={t("docs.gsSub")}
           >
             <ul className="docs__list">
               <li className="docs-check">
@@ -273,8 +231,8 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
                   </svg>
                 </span>
                 <span className="docs-check__text">
-                  <strong>Зарегистрируйтесь и войдите.</strong> Создайте аккаунт на главной странице — это займёт
-                  меньше минуты.
+                  <strong>{t("docs.gsStep1Strong")}</strong>
+                  {t("docs.gsStep1")}
                 </span>
               </li>
               <li className="docs-check">
@@ -284,8 +242,8 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
                   </svg>
                 </span>
                 <span className="docs-check__text">
-                  <strong>Загрузите документы.</strong> Перетащите файлы в боковую панель или нажмите кнопку «+» в поле
-                  ввода. Поддерживаются PDF, DOCX, ODT, TXT и Markdown.
+                  <strong>{t("docs.gsStep2Strong")}</strong>
+                  {t("docs.gsStep2")}
                 </span>
               </li>
               <li className="docs-check">
@@ -295,8 +253,8 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
                   </svg>
                 </span>
                 <span className="docs-check__text">
-                  <strong>Задайте вопрос.</strong> Опишите своими словами, что нужно найти или узнать. ADA сама найдёт
-                  релевантные фрагменты и покажет источники ответа.
+                  <strong>{t("docs.gsStep3Strong")}</strong>
+                  {t("docs.gsStep3")}
                 </span>
               </li>
               <li className="docs-check">
@@ -306,184 +264,129 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
                   </svg>
                 </span>
                 <span className="docs-check__text">
-                  <strong>Попросите создать или отредактировать документ.</strong> Результат всегда сохраняется отдельно,
-                  а исходный файл остаётся без изменений.
+                  <strong>{t("docs.gsStep4Strong")}</strong>
+                  {t("docs.gsStep4")}
                 </span>
               </li>
             </ul>
             <div className="docs__cols">
               <div className="docs__card">
-                <h3>Не нужно помнить имена файлов</h3>
-                <p>
-                  Достаточно описать, что ищете: «шаблон договора», «данные сотрудника», «последний отчёт». ADA сама
-                  найдёт подходящие документы.
-                </p>
+                <h3>{t("docs.gsC1Title")}</h3>
+                <p>{t("docs.gsC1Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Работа с несколькими документами</h3>
-                <p>
-                  Можно анализировать несколько файлов сразу: сравнить условия, найти все упоминания темы или собрать
-                  информацию из разных источников в одном ответе.
-                </p>
+                <h3>{t("docs.gsC2Title")}</h3>
+                <p>{t("docs.gsC2Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Всё, что вы сделали, сохраняется</h3>
-                <p>
-                  Чаты, загруженные и созданные документы хранятся в вашей учётной записи. Можно вернуться к любому
-                  разговору или скачать файл в любой момент.
-                </p>
+                <h3>{t("docs.gsC3Title")}</h3>
+                <p>{t("docs.gsC3Text")}</p>
               </div>
             </div>
           </Section>
 
-          <Section id="features" kicker="Возможности" title="Что умеет ADA">
+          <Section id="features" kicker={t("docs.featuresKicker")} title={t("docs.featuresTitle")}>
             <div className="docs__cols">
               <div className="docs__card">
-                <h3>Поиск по документам</h3>
-                <p>
-                  Находит информацию по смыслу и по точным словам. Даже если формулировка вопроса отличается от текста
-                  документа, поиск покажет нужные фрагменты.
-                </p>
+                <h3>{t("docs.f1Title")}</h3>
+                <p>{t("docs.f1Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Ответы с источниками</h3>
-                <p>
-                  Каждый ответ сопровождается списком документов и фрагментов, на основе которых он составлен. Вы всегда
-                  можете проверить, откуда взята информация.
-                </p>
+                <h3>{t("docs.f2Title")}</h3>
+                <p>{t("docs.f2Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Создание документов</h3>
-                <p>
-                  Попросите «сделай договор», «подготовь отчёт» или «составь список пунктов» — ADA создаст готовый файл
-                  в формате DOCX, ODT или TXT и сохранит его в ваше пространство.
-                </p>
+                <h3>{t("docs.f3Title")}</h3>
+                <p>{t("docs.f3Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Редактирование документов</h3>
-                <p>
-                  «Сократи договор до одного абзаца», «переведи на русский», «замени дату» — изменения вносятся в копию
-                  документа. Оригинал никогда не перезаписывается.
-                </p>
+                <h3>{t("docs.f4Title")}</h3>
+                <p>{t("docs.f4Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Чаты с памятью</h3>
-                <p>
-                  Диалог хранит историю и контекст. Можно уточнять вопросы и возвращаться к прошлым обсуждениям в любой
-                  момент.
-                </p>
+                <h3>{t("docs.f5Title")}</h3>
+                <p>{t("docs.f5Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Изоляция между пользователями</h3>
-                <p>
-                  Ваши документы, поиск и чаты видны только вам. Чужие файлы недоступны — данные каждого пользователя
-                  полностью отделены.
-                </p>
+                <h3>{t("docs.f6Title")}</h3>
+                <p>{t("docs.f6Text")}</p>
               </div>
             </div>
           </Section>
 
-          <Section id="benefits" kicker="Преимущества" title="Почему это удобно">
+          <Section id="benefits" kicker={t("docs.benefitsKicker")} title={t("docs.benefitsTitle")}>
             <div className="docs__cols">
               <div className="docs__card">
-                <h3>Экономия времени</h3>
-                <p>
-                  Вместо того чтобы открывать десятки файлов и искать нужную страницу вручную, вы задаёте один вопрос и
-                  сразу получаете ответ с источниками.
-                </p>
+                <h3>{t("docs.b1Title")}</h3>
+                <p>{t("docs.b1Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Привязанность к источникам</h3>
-                <p>
-                  Ответы строятся на ваших документах и всегда снабжены ссылками на них. Вы видите, откуда взята каждая
-                  часть ответа, и можете проверить точность.
-                </p>
+                <h3>{t("docs.b2Title")}</h3>
+                <p>{t("docs.b2Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Понятно без обучения</h3>
-                <p>
-                  Никаких сложных команд и синтаксиса: пишите вопросы обычным языком, как в переписке с коллегой.
-                </p>
+                <h3>{t("docs.b3Title")}</h3>
+                <p>{t("docs.b3Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Оригиналы в безопасности</h3>
-                <p>
-                  Редактирование всегда работает с копией. Исходный файл остаётся нетронутым и доступен для скачивания в
-                  любой момент.
-                </p>
+                <h3>{t("docs.b4Title")}</h3>
+                <p>{t("docs.b4Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Данные под контролем</h3>
-                <p>
-                  Вы решаете, что загружать, а что удалять. Удаление документа полностью убирает его из системы — включая
-                  индекс и фрагменты.
-                </p>
+                <h3>{t("docs.b5Title")}</h3>
+                <p>{t("docs.b5Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Русскоязычный интерфейс</h3>
-                <p>
-                  Весь интерфейс локализован на русский язык, со светлой и тёмной темами на выбор.
-                </p>
+                <h3>{t("docs.b6Title")}</h3>
+                <p>{t("docs.b6Text")}</p>
               </div>
             </div>
           </Section>
 
-          <Section id="privacy" kicker="Приватность" title="Ваши документы — только ваши">
+          <Section id="privacy" kicker={t("docs.privacyKicker")} title={t("docs.privacyTitle")}>
             <div className="docs__cols">
               <div className="docs__card">
-                <h3>Данные изолированы</h3>
-                <p>
-                  Документы, поиск и переписка одного пользователя недоступны другим. Чужие файлы даже не отображаются в
-                  выдаче.
-                </p>
+                <h3>{t("docs.p1Title")}</h3>
+                <p>{t("docs.p1Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Пароли не хранятся открыто</h3>
-                <p>
-                  Пароли сохраняются только в зашифрованном виде и никогда не передаются третьим лицам.
-                </p>
+                <h3>{t("docs.p2Title")}</h3>
+                <p>{t("docs.p2Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Полный контроль удаления</h3>
-                <p>
-                  Вы можете удалить документ или чат в один клик. Удалённые данные не остаются ни в поиске, ни в
-                  контексте ответов.
-                </p>
+                <h3>{t("docs.p3Title")}</h3>
+                <p>{t("docs.p3Text")}</p>
               </div>
               <div className="docs__card">
-                <h3>Честные ответы</h3>
-                <p>
-                  Если в документах нет нужной информации, сервис так и скажет, вместо того чтобы выдумывать ответ.
-                </p>
+                <h3>{t("docs.p4Title")}</h3>
+                <p>{t("docs.p4Text")}</p>
               </div>
             </div>
           </Section>
 
-          <Section id="roadmap" kicker="Развитие" title="Куда мы движемся">
-            <p>Дорожная карта отражает текущий статус; состав будущих функций будет подтверждён отдельно.</p>
+          <Section id="roadmap" kicker={t("docs.roadmapKicker")} title={t("docs.roadmapTitle")}>
+            <p>{t("docs.roadmapSub")}</p>
             <RoadmapBlock />
           </Section>
 
           <footer className="docs__footer">
             <div className="docs__footer-brand">
               <span className="docs__footer-logo">ADA</span>
-              <p className="docs__footer-tagline">Documentation</p>
+              <p className="docs__footer-tagline">{t("docs.footerTagline")}</p>
             </div>
             <nav className="docs__footer-col">
-              <span className="docs__footer-heading">Навигация</span>
-              <button type="button" onClick={() => scrollTo("overview")}>Обзор</button>
-              <button type="button" onClick={() => scrollTo("getting-started")}>Как пользоваться</button>
-              <button type="button" onClick={() => scrollTo("privacy")}>Приватность</button>
+              <span className="docs__footer-heading">{t("docs.footerNavHeading")}</span>
+              <button type="button" onClick={() => scrollTo("overview")}>{t("docs.navOverview")}</button>
+              <button type="button" onClick={() => scrollTo("getting-started")}>{t("docs.navGettingStarted")}</button>
+              <button type="button" onClick={() => scrollTo("privacy")}>{t("docs.navPrivacy")}</button>
             </nav>
             <div className="docs__footer-col">
-              <span className="docs__footer-heading">Код</span>
-              <span className="docs__footer-note">
-                GitHub: private repository — source code currently closed.
-              </span>
+              <span className="docs__footer-heading">{t("docs.footerCodeHeading")}</span>
+              <span className="docs__footer-note">{t("docs.footerCodeNote")}</span>
             </div>
             <div className="docs__footer-col">
-              <span className="docs__footer-heading">Контакты</span>
-              <button type="button" onClick={onHome}>Contact</button>
+              <span className="docs__footer-heading">{t("docs.footerContactsHeading")}</span>
+              <button type="button" onClick={onHome}>{t("docs.footerContact")}</button>
             </div>
           </footer>
         </main>

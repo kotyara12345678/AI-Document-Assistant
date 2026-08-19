@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import DocsPage from "../DocsPage";
+import { renderWithI18n } from "../../test/render";
 
 class IntersectionObserverStub {
   constructor(_cb: IntersectionObserverCallback, _opts?: IntersectionObserverInit) {}
@@ -25,7 +26,7 @@ afterEach(() => {
 });
 
 function renderPage() {
-  return render(<DocsPage onHome={vi.fn()} />);
+  return renderWithI18n(<DocsPage onHome={vi.fn()} />);
 }
 
 describe("DocsPage", () => {

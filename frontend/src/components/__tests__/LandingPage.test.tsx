@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import LandingPage from "../LandingPage";
+import { renderWithI18n } from "../../test/render";
 
 afterEach(() => {
   cleanup();
@@ -16,7 +17,7 @@ function renderPage(overrides: Partial<Parameters<typeof LandingPage>[0]> = {}) 
     onOpenDocs: vi.fn(),
     ...overrides,
   };
-  return { ...render(<LandingPage {...props} />), props };
+  return { ...renderWithI18n(<LandingPage {...props} />), props };
 }
 
 describe("LandingPage", () => {

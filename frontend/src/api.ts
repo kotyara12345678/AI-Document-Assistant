@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type {
   AdminReportList,
   AdminStats,
@@ -198,7 +199,7 @@ export async function streamAgent(req: ChatRequest, handlers: StreamHandlers): P
       body: JSON.stringify(req),
     });
   } catch (err) {
-    handlers.onError?.(err instanceof Error ? err.message : "Сбой сети");
+    handlers.onError?.(err instanceof Error ? err.message : t("api.networkError"));
     return;
   }
   if (!res.ok || !res.body) {

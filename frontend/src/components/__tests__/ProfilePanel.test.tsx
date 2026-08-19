@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import ProfilePanel from "../ProfilePanel";
 import type { UserOut } from "../../types";
+import { renderWithI18n } from "../../test/render";
 
 afterEach(() => {
   cleanup();
@@ -40,7 +41,7 @@ beforeEach(() => {
 });
 
 function renderPanel(props: Partial<React.ComponentProps<typeof ProfilePanel>> = {}) {
-  return render(
+  return renderWithI18n(
     <ProfilePanel
       user={alice}
       onBack={() => {}}

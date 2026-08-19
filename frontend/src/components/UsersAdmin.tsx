@@ -12,21 +12,9 @@ import type {
   AdminUser,
   UserRole,
 } from "../types";
+import { useI18n } from "../i18n";
 
 const PAGE_SIZE = 20;
-
-const ROLE_LABELS: Record<UserRole, string> = {
-  user: "Пользователь",
-  moderator: "Модератор",
-  admin: "Администратор",
-};
-
-const STATUS_LABELS: Record<AdminReportStatus, string> = {
-  pending: "На рассмотрении",
-  reviewed: "Рассмотрена",
-  rejected: "Отклонена",
-  action_taken: "Меры приняты",
-};
 
 interface ConfirmState {
   kind: "block" | "delete";
@@ -46,18 +34,8 @@ interface Props {
   currentUserId: number;
 }
 
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleString("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 export default function UsersAdmin({ currentUserId }: Props) {
+  const { t, formatNumber, formatDate } = useI18n();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -71,9 +49,44 @@ export default function UsersAdmin({ currentUserId }: Props) {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [reports, setReports] = useState<ReportsState | null>(null);
 
+  const roleLabel = (role: UserRole): string => {
+    switch (role) {
+      case "admin":
+        return t("users.roleAdmin");
+      case "moderator":
+        return t("users.roleModerator");
+      default:
+        return t("users.roleUser");
+    }
+  };
+
+  const statusLabel = (status: AdminReportStatus): string => {
+    switch (status) {
+      case "pending":
+        return t("users.statusPending");
+      case "reviewed":
+        return t("users.statusReviewed");
+      case "rejected":
+        return t("users.statusRejected");
+      default:
+        return t("users.statusActionTaken");
+    }
+  };
+
+  const formatDateTime = (value: string | null): string => {
+    if (!value) return "—";
+    return formatDate(value, {
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
   useEffect(() => {
-    const t = window.setTimeout(() => setAppliedSearch(search.trim()), 400);
-    return () => window.clearTimeout(t);
+    const timer = window.setTimeout(() => setAppliedSearch(search.trim()), 400);
+    return () => window.clearTimeout(timer);
   }, [search]);
 
   const flashNotice = useCallback((msg: string) => {
@@ -94,16 +107,15 @@ export default function UsersAdmin({ currentUserId }: Props) {
         setTotal(data.total);
         setUsers((prev) => (replace ? data.items : [...prev, ...data.items]));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось загрузить пользователей");
+        setError(err instanceof Error ? err.message : t("users.errorLoad"));
       } finally {
         setLoading(false);
         setLoadingMore(false);
       }
     },
-    [],
+    [t],
   );
 
-  // Initial load + reload whenever the (debounced) search term changes.
   useEffect(() => {
     void loadPage(1, appliedSearch, true);
   }, [appliedSearch, loadPage]);
@@ -112,9 +124,12 @@ export default function UsersAdmin({ currentUserId }: Props) {
     setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
   }, []);
 
-  const applyError = useCallback((err: unknown): string => {
-    return err instanceof Error ? err.message : "Не удалось выполнить операцию";
-  }, []);
+  const applyError = useCallback(
+    (err: unknown): string => {
+      return err instanceof Error ? err.message : t("users.errorOperation");
+    },
+    [t],
+  );
 
   const handleRole = useCallback(
     async (user: AdminUser, role: UserRole) => {
@@ -123,12 +138,12 @@ export default function UsersAdmin({ currentUserId }: Props) {
       try {
         const updated = await patchAdminUserRole(user.id, role);
         replaceRow(updated);
-        flashNotice(`Роль пользователя ${user.email} изменена на «${ROLE_LABELS[role]}»`);
+        flashNotice(t("users.noticeRoleChanged", { email: user.email, role: roleLabel(role) }));
       } catch (err) {
         setError(applyError(err));
       }
     },
-    [applyError, flashNotice, replaceRow],
+    [applyError, flashNotice, replaceRow, t],
   );
 
   const handleBlockUnblock = useCallback(
@@ -139,12 +154,12 @@ export default function UsersAdmin({ currentUserId }: Props) {
       try {
         const updated = await patchAdminUserStatus(user.id, !user.is_active);
         replaceRow(updated);
-        flashNotice(updated.is_active ? "Пользователь разблокирован" : "Пользователь заблокирован");
+        flashNotice(updated.is_active ? t("users.noticeUnblocked") : t("users.noticeBlocked"));
       } catch (err) {
         setError(applyError(err));
       }
     },
-    [applyError, flashNotice, replaceRow],
+    [applyError, flashNotice, replaceRow, t],
   );
 
   const handleDelete = useCallback(
@@ -155,33 +170,36 @@ export default function UsersAdmin({ currentUserId }: Props) {
       try {
         await deleteAdminUser(user.id);
         setUsers((prev) => prev.filter((u) => u.id !== user.id));
-        setTotal((t) => Math.max(0, t - 1));
-        flashNotice(`Пользователь ${user.email} удалён`);
+        setTotal((n) => Math.max(0, n - 1));
+        flashNotice(t("users.noticeDeleted", { email: user.email }));
       } catch (err) {
         setError(applyError(err));
       }
     },
-    [applyError, flashNotice],
+    [applyError, flashNotice, t],
   );
 
-  const openReports = useCallback(async (user: AdminUser) => {
-    setMenuFor(null);
-    setError(null);
-    setReports({ user, reports: [], total: 0, page: 0, loading: true, error: null });
-    try {
-      const data = await fetchAdminUserReports(user.id, 1, PAGE_SIZE);
-      setReports({ user, reports: data.items, total: data.total, page: 1, loading: false, error: null });
-    } catch (err) {
-      setReports({
-        user,
-        reports: [],
-        total: 0,
-        page: 1,
-        loading: false,
-        error: err instanceof Error ? err.message : "Не удалось загрузить жалобы",
-      });
-    }
-  }, []);
+  const openReports = useCallback(
+    async (user: AdminUser) => {
+      setMenuFor(null);
+      setError(null);
+      setReports({ user, reports: [], total: 0, page: 0, loading: true, error: null });
+      try {
+        const data = await fetchAdminUserReports(user.id, 1, PAGE_SIZE);
+        setReports({ user, reports: data.items, total: data.total, page: 1, loading: false, error: null });
+      } catch (err) {
+        setReports({
+          user,
+          reports: [],
+          total: 0,
+          page: 1,
+          loading: false,
+          error: err instanceof Error ? err.message : t("users.errorReports"),
+        });
+      }
+    },
+    [t],
+  );
 
   const loadMoreReports = useCallback(async () => {
     if (!reports || reports.loading) return;
@@ -215,36 +233,36 @@ export default function UsersAdmin({ currentUserId }: Props) {
         <input
           className="users-search"
           type="search"
-          placeholder="Поиск по имени / email…"
+          placeholder={t("users.searchPh")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <span className="users-count">
-          {total.toLocaleString("ru-RU")} {plural(total, "пользователь", "пользователя", "пользователей")}
+          {formatNumber(total)} {t("users.count", { count: total })}
         </span>
       </div>
 
       {error && <div className="admin__error">{error}</div>}
       {notice && <div className="admin__notice">{notice}</div>}
-      {loading && <div className="admin__loading">Загружаем пользователей…</div>}
+      {loading && <div className="admin__loading">{t("users.loading")}</div>}
 
       {!loading && (
         <>
           {users.length === 0 ? (
-            <div className="admin__loading">Пользователи не найдены.</div>
+            <div className="admin__loading">{t("users.notFound")}</div>
           ) : (
             <div className="users-scroll">
               <table className="admin-table">
                 <thead>
                   <tr>
                     <th>ID</th>
-                    <th>Пользователь</th>
-                    <th>Email</th>
-                    <th>Регистрация</th>
-                    <th>Роль</th>
-                    <th>Жалобы</th>
-                    <th>Статус</th>
-                    <th>Активность</th>
+                    <th>{t("users.thUser")}</th>
+                    <th>{t("users.thEmail")}</th>
+                    <th>{t("users.thRegistered")}</th>
+                    <th>{t("users.thRole")}</th>
+                    <th>{t("users.thReports")}</th>
+                    <th>{t("users.thStatus")}</th>
+                    <th>{t("users.thActivity")}</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -256,13 +274,13 @@ export default function UsersAdmin({ currentUserId }: Props) {
                         <td className="admin-table__muted">{u.id}</td>
                         <td className="admin-table__name" title={u.email}>
                           {u.email}
-                          {isSelf && <span className="users-self"> (вы)</span>}
+                          {isSelf && <span className="users-self">{t("users.selfSuffix")}</span>}
                         </td>
                         <td className="admin-table__email">{u.email}</td>
-                        <td className="admin-table__muted">{formatDate(u.created_at)}</td>
+                        <td className="admin-table__muted">{formatDateTime(u.created_at)}</td>
                         <td>
                           <span className={`pill pill--role pill--role-${u.role}`}>
-                            {ROLE_LABELS[u.role]}
+                            {roleLabel(u.role)}
                           </span>
                         </td>
                         <td>
@@ -276,49 +294,49 @@ export default function UsersAdmin({ currentUserId }: Props) {
                         </td>
                         <td>
                           <span className={`pill ${u.is_active ? "pill--ok" : "pill--down"}`}>
-                            {u.is_active ? "Активен" : "Заблокирован"}
+                            {u.is_active ? t("users.active") : t("users.blocked")}
                           </span>
                         </td>
-                        <td className="admin-table__muted">{formatDate(u.last_active_at)}</td>
+                        <td className="admin-table__muted">{formatDateTime(u.last_active_at)}</td>
                         <td>
                           <div className="users-menu">
                             {menuFor === u.id && <div className="users-menu-backdrop" onClick={() => setMenuFor(null)} />}
                             <button
                               className="users-menu-btn"
                               onClick={() => setMenuFor((cur) => (cur === u.id ? null : u.id))}
-                              aria-label="Действия"
-                              title="Действия"
+                              aria-label={t("users.actionsAria")}
+                              title={t("users.actionsAria")}
                             >
                               ⋮
                             </button>
                             {menuFor === u.id && (
                               <div className="users-menu-list">
                                 <button className="users-menu-item" onClick={() => void openReports(u)}>
-                                  Посмотреть жалобы
+                                  {t("users.viewReports")}
                                 </button>
                                 {!isSelf && u.role !== "admin" && (
                                   <button className="users-menu-item" onClick={() => void handleRole(u, "admin")}>
-                                    Сделать администратором
+                                    {t("users.makeAdmin")}
                                   </button>
                                 )}
                                 {!isSelf && u.role !== "moderator" && (
                                   <button className="users-menu-item" onClick={() => void handleRole(u, "moderator")}>
-                                    Сделать модератором
+                                    {t("users.makeModerator")}
                                   </button>
                                 )}
                                 {!isSelf && u.role === "admin" && (
                                   <button className="users-menu-item" onClick={() => void handleRole(u, "user")}>
-                                    Снять права администратора
+                                    {t("users.revokeAdmin")}
                                   </button>
                                 )}
                                 {!isSelf && u.role === "moderator" && (
                                   <button className="users-menu-item" onClick={() => void handleRole(u, "user")}>
-                                    Снять права модератора
+                                    {t("users.revokeModerator")}
                                   </button>
                                 )}
                                 {!isSelf && !u.is_active && (
                                   <button className="users-menu-item" onClick={() => void handleBlockUnblock(u)}>
-                                    Разблокировать
+                                    {t("users.unblockAction")}
                                   </button>
                                 )}
                                 {!isSelf && u.is_active && (
@@ -329,7 +347,7 @@ export default function UsersAdmin({ currentUserId }: Props) {
                                       setConfirm({ kind: "block", user: u });
                                     }}
                                   >
-                                    Заблокировать
+                                    {t("users.blockAction")}
                                   </button>
                                 )}
                                 {!isSelf && (
@@ -340,7 +358,7 @@ export default function UsersAdmin({ currentUserId }: Props) {
                                       setConfirm({ kind: "delete", user: u });
                                     }}
                                   >
-                                    Удалить пользователя
+                                    {t("users.deleteUser")}
                                   </button>
                                 )}
                               </div>
@@ -356,15 +374,15 @@ export default function UsersAdmin({ currentUserId }: Props) {
           )}
 
           <div className="users-footer">
-            {loadingMore && <span className="users-count" style={{ opacity: 0.7 }}>Загружаем ещё…</span>}
+            {loadingMore && <span className="users-count" style={{ opacity: 0.7 }}>{t("users.loadingMore")}</span>}
             {hasMore && !loadingMore && (
               <button className="admin__back" onClick={() => void loadPage(Math.ceil(users.length / PAGE_SIZE) + 1, appliedSearch, false)}>
-                Загрузить ещё
+                {t("users.loadMore")}
               </button>
             )}
             {!hasMore && users.length > 0 && (
               <span className="users-count" style={{ opacity: 0.7 }}>
-                Показаны все
+                {t("users.allShown")}
               </span>
             )}
           </div>
@@ -375,24 +393,16 @@ export default function UsersAdmin({ currentUserId }: Props) {
         <div className="modal-backdrop" onClick={() => setConfirm(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal__title">
-              {confirm.kind === "block" ? "Заблокировать пользователя" : "Удалить пользователя"}
+              {confirm.kind === "block" ? t("users.modalBlockTitle") : t("users.modalDeleteTitle")}
             </div>
             <div className="modal__body">
-              {confirm.kind === "block" ? (
-                <>
-                  Заблокировать <strong>{confirm.user.email}</strong>? Пользователь потеряет доступ к
-                  аккаунту (данные сохранятся и могут быть восстановлены).
-                </>
-              ) : (
-                <>
-                  Удалить <strong>{confirm.user.email}</strong>? Аккаунт будет скрыт из системы
-                  (мягкое удаление) — документы и чаты останутся в базе.
-                </>
-              )}
+              {t(confirm.kind === "block" ? "users.modalBlockBody" : "users.modalDeleteBody", {
+                email: confirm.user.email,
+              })}
             </div>
             <div className="modal__actions">
               <button className="admin__back" onClick={() => setConfirm(null)}>
-                Отмена
+                {t("users.cancel")}
               </button>
               <button
                 className="modal__btn modal__btn--danger"
@@ -400,7 +410,7 @@ export default function UsersAdmin({ currentUserId }: Props) {
                   confirm.kind === "block" ? void handleBlockUnblock(confirm.user) : void handleDelete(confirm.user)
                 }
               >
-                {confirm.kind === "block" ? "Заблокировать" : "Удалить"}
+                {confirm.kind === "block" ? t("users.blockBtn") : t("users.deleteBtn")}
               </button>
             </div>
           </div>
@@ -411,27 +421,25 @@ export default function UsersAdmin({ currentUserId }: Props) {
         <div className="modal-backdrop" onClick={() => setReports(null)}>
           <div className="modal modal--wide" onClick={(e) => e.stopPropagation()}>
             <div className="modal__title">
-              Жалобы на пользователя {reports.user.email}{" "}
-              <span className="users-count">
-                ({reports.total.toLocaleString("ru-RU")})
-              </span>
+              {t("users.reportsTitle", { email: reports.user.email })}{" "}
+              <span className="users-count">({formatNumber(reports.total)})</span>
             </div>
             {reports.error && <div className="admin__error">{reports.error}</div>}
-            {reports.loading && <div className="admin__loading">Загружаем жалобы…</div>}
+            {reports.loading && <div className="admin__loading">{t("users.loadingReports")}</div>}
             {!reports.loading && reports.reports.length === 0 && (
-              <div className="admin__loading">Жалоб нет.</div>
+              <div className="admin__loading">{t("users.noReports")}</div>
             )}
             {!reports.loading && reports.reports.length > 0 && (
               <div className="users-scroll">
                 <table className="admin-table">
                   <thead>
                     <tr>
-                      <th>Кто пожаловался</th>
-                      <th>Причина</th>
-                      <th>Описание</th>
-                      <th>Дата</th>
-                      <th>Статус</th>
-                      <th>Решение</th>
+                      <th>{t("users.thReporter")}</th>
+                      <th>{t("users.thReason")}</th>
+                      <th>{t("users.thDescription")}</th>
+                      <th>{t("users.thDate")}</th>
+                      <th>{t("users.thReportStatus")}</th>
+                      <th>{t("users.thResolution")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -440,15 +448,15 @@ export default function UsersAdmin({ currentUserId }: Props) {
                         <td className="admin-table__email">{r.reporter_email}</td>
                         <td>{r.reason}</td>
                         <td className="admin-table__desc">{r.description ?? "—"}</td>
-                        <td className="admin-table__muted">{formatDate(r.created_at)}</td>
+                        <td className="admin-table__muted">{formatDateTime(r.created_at)}</td>
                         <td>
                           <span className={`pill pill--report pill--report-${r.status}`}>
-                            {STATUS_LABELS[r.status]}
+                            {statusLabel(r.status)}
                           </span>
                         </td>
                         <td className="admin-table__muted">
                           {r.resolved_by_email
-                            ? `${r.resolved_by_email} · ${formatDate(r.resolved_at)}`
+                            ? `${r.resolved_by_email} · ${formatDateTime(r.resolved_at)}`
                             : "—"}
                         </td>
                       </tr>
@@ -460,11 +468,11 @@ export default function UsersAdmin({ currentUserId }: Props) {
             <div className="modal__actions">
               {reports.reports.length < reports.total && (
                 <button className="admin__back" onClick={() => void loadMoreReports()} disabled={reports.loading}>
-                  Загрузить ещё ({reports.reports.length} из {reports.total})
+                  {t("users.loadMoreOf", { loaded: reports.reports.length, total: reports.total })}
                 </button>
               )}
               <button className="admin__back" onClick={() => setReports(null)}>
-                Закрыть
+                {t("users.close")}
               </button>
             </div>
           </div>
@@ -472,12 +480,4 @@ export default function UsersAdmin({ currentUserId }: Props) {
       )}
     </section>
   );
-}
-
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
 }

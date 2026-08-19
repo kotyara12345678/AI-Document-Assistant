@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import AuthScreen from "../AuthScreen";
+import { renderWithI18n } from "../../test/render";
 
 afterEach(() => {
   localStorage.clear();
@@ -11,7 +12,7 @@ afterEach(() => {
 describe("AuthScreen registration consent", () => {
   it("blocks registration until consent to personal data processing is given", () => {
     const onAuthed = vi.fn();
-    const { container } = render(<AuthScreen initialMode="register" onAuthed={onAuthed} />);
+    const { container } = renderWithI18n(<AuthScreen initialMode="register" onAuthed={onAuthed} />);
 
     fireEvent.change(screen.getByPlaceholderText("you@example.com"), {
       target: { value: "user@example.com" },
@@ -47,7 +48,7 @@ describe("AuthScreen registration consent", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { container } = render(<AuthScreen initialMode="register" onAuthed={onAuthed} />);
+    const { container } = renderWithI18n(<AuthScreen initialMode="register" onAuthed={onAuthed} />);
 
     fireEvent.change(screen.getByPlaceholderText("you@example.com"), {
       target: { value: "user@example.com" },
@@ -74,7 +75,7 @@ describe("AuthScreen registration consent", () => {
 
   it("policy link opens the privacy page", () => {
     const onOpenPrivacy = vi.fn();
-    render(<AuthScreen initialMode="register" onAuthed={vi.fn()} onOpenPrivacy={onOpenPrivacy} />);
+    renderWithI18n(<AuthScreen initialMode="register" onAuthed={vi.fn()} onOpenPrivacy={onOpenPrivacy} />);
 
     fireEvent.click(screen.getByText("Политикой обработки персональных данных"));
     expect(onOpenPrivacy).toHaveBeenCalledTimes(1);
@@ -82,7 +83,7 @@ describe("AuthScreen registration consent", () => {
 
   it("mentions cookies with a link to Cookie Policy", () => {
     const onOpenCookies = vi.fn();
-    render(<AuthScreen onAuthed={vi.fn()} onOpenCookies={onOpenCookies} />);
+    renderWithI18n(<AuthScreen onAuthed={vi.fn()} onOpenCookies={onOpenCookies} />);
 
     expect(screen.getByText(/Мы используем файлы cookie/)).toBeTruthy();
     fireEvent.click(screen.getByText("Cookie Policy"));

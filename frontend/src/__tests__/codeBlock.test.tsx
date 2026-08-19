@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import CopyableBlock, { extractCodeBlock } from "../codeBlock";
+import { renderWithI18n } from "../test/render";
 
 describe("extractCodeBlock", () => {
   it("returns the content of a single fenced block", () => {
@@ -49,7 +50,7 @@ describe("CopyableBlock", () => {
 
   it("renders the code and a copy button, and copies on click", async () => {
     const code = "line one\nline two";
-    render(<CopyableBlock result={{ before: "", code, after: "" }} />);
+    renderWithI18n(<CopyableBlock result={{ before: "", code, after: "" }} />);
     expect(screen.getByText(/line one/)).toBeTruthy();
     const btn = screen.getByText("Копировать");
     fireEvent.click(btn);

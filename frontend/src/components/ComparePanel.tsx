@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CompareResponse, DocumentOut } from "../types";
 import { compareDocuments, fetchDocumentVersions } from "../api";
+import { useI18n } from "../i18n";
 import CompareViewer from "./CompareViewer";
 
 interface ComparePanelProps {
@@ -17,6 +18,7 @@ interface ComparePanelProps {
  * picking the original / an earlier edit.
  */
 export default function ComparePanel({ documents, initialId, onClose }: ComparePanelProps) {
+  const { t } = useI18n();
   const sorted = useMemo(
     () => [...documents].sort((a, b) => a.original_filename.localeCompare(b.original_filename)),
     [documents],
@@ -33,8 +35,6 @@ export default function ComparePanel({ documents, initialId, onClose }: CompareP
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load the version chain of the left document so "compare with original"
-  // is one click (the version list also confirms whether it has versions).
   useEffect(() => {
     if (!leftId) return;
     let cancelled = false;
@@ -58,11 +58,11 @@ export default function ComparePanel({ documents, initialId, onClose }: CompareP
     try {
       setData(await compareDocuments(leftId, rightId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось сравнить документы");
+      setError(err instanceof Error ? err.message : t("compare.errorCompare"));
     } finally {
       setLoading(false);
     }
-  }, [leftId, rightId]);
+  }, [leftId, rightId, t]);
 
   const versionOf = (id: number): DocumentOut | undefined =>
     documents.find((d) => d.id === id);
@@ -75,22 +75,22 @@ export default function ComparePanel({ documents, initialId, onClose }: CompareP
         <div className="compare__file">
           <span className="compare__file-icon">{"⇄"}</span>
           <div className="compare__file-info">
-            <div className="compare__file-name">Сравнение документов</div>
+            <div className="compare__file-name">{t("compare.title")}</div>
             <div className="compare__file-meta">
               {data
                 ? `${data.left.original_filename} ↔ ${data.right.original_filename}`
-                : "Выберите два файла или две версии"}
+                : t("compare.pickHint")}
             </div>
           </div>
         </div>
-        <button className="compare__close" onClick={onClose} aria-label="Закрыть сравнение">
+        <button className="compare__close" onClick={onClose} aria-label={t("compare.closeAria")}>
           ✕
         </button>
       </div>
 
       <div className="compare__controls">
         <label className="compare__pick">
-          <span className="compare__pick-label">Слева</span>
+          <span className="compare__pick-label">{t("compare.left")}</span>
           <select
             className="compare__select"
             value={leftId}
@@ -113,11 +113,11 @@ export default function ComparePanel({ documents, initialId, onClose }: CompareP
           disabled={!leftId || !rightId || leftId === rightId || loading}
           onClick={() => void run()}
         >
-          {loading ? "Сравниваем…" : "Сравнить"}
+          {loading ? t("compare.comparing") : t("compare.compareAction")}
         </button>
 
         <label className="compare__pick">
-          <span className="compare__pick-label">Справа</span>
+          <span className="compare__pick-label">{t("compare.right")}</span>
           <select
             className="compare__select"
             value={rightId}
@@ -127,16 +127,16 @@ export default function ComparePanel({ documents, initialId, onClose }: CompareP
             }}
           >
             {versions.length > 1 && (
-              <optgroup label="Версии этого документа">
+              <optgroup label={t("compare.versionsGroup")}>
                 {versions.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.original_filename}
-                    {v.id === leftId ? " (этот)" : ""}
+                    {v.id === leftId ? t("compare.thisOne") : ""}
                   </option>
                 ))}
               </optgroup>
             )}
-            <optgroup label="Все документы">
+            <optgroup label={t("compare.allDocs")}>
               {sorted.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.original_filename}
@@ -158,14 +158,14 @@ export default function ComparePanel({ documents, initialId, onClose }: CompareP
       ) : (
         <div className="compare__body">
           <div className="compare__empty">
-            <div className="compare__empty-title">Что вы хотите сравнить?</div>
-            <div className="compare__empty-sub">
-              Выберите два документа слева и справа и нажмите «Сравнить». Если файл был
-              создан редактированием другого, его версии появятся в списке справа.
-            </div>
+            <div className="compare__empty-title">{t("compare.emptyTitle")}</div>
+            <div className="compare__empty-sub">{t("compare.emptySub")}</div>
             {versions.length > 1 && (
               <div className="compare__empty-versions">
-                У «{leftDoc?.original_filename ?? ""}» обнаружено версий: {versions.length}
+                {t("compare.versionsFound", {
+                  name: leftDoc?.original_filename ?? "",
+                  count: versions.length,
+                })}
               </div>
             )}
           </div>

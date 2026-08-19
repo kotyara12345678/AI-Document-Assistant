@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import UsersAdmin from "../UsersAdmin";
+import { renderWithI18n } from "../../test/render";
 
 afterEach(() => {
   localStorage.clear();
@@ -92,7 +93,7 @@ function stubApi(extra?: (url: string, init?: RequestInit) => unknown) {
 }
 
 async function renderUsers() {
-  const utils = render(<UsersAdmin currentUserId={1} />);
+  const utils = renderWithI18n(<UsersAdmin currentUserId={1} />);
   await waitFor(() => expect(screen.queryAllByText("charlie@example.com").length).toBeGreaterThan(0));
   return utils;
 }

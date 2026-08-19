@@ -6,6 +6,7 @@ import {
   saveCookieSettings,
   type CookieSettings,
 } from "../consent";
+import { useI18n } from "../i18n";
 
 interface Props {
   open: boolean;
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export default function CookieConsent({ open, onOpenChange }: Props) {
+  const { t } = useI18n();
   const [chosen, setChosen] = useState<boolean>(() => hasCookieChoice());
   const [draft, setDraft] = useState<CookieSettings>(DEFAULT_COOKIE_SETTINGS);
 
@@ -30,21 +32,19 @@ export default function CookieConsent({ open, onOpenChange }: Props) {
   return (
     <>
       {!chosen && !open && (
-        <div className="cookie-banner" role="dialog" aria-live="polite" aria-label="Использование файлов cookie">
+        <div className="cookie-banner" role="dialog" aria-live="polite" aria-label={t("cookieConsent.bannerAria")}>
           <div className="cookie-banner__body">
-            <p className="cookie-banner__text">
-              Мы используем файлы cookie для обеспечения работы сайта и улучшения сервиса.
-            </p>
+            <p className="cookie-banner__text">{t("cookieConsent.bannerText")}</p>
             <div className="cookie-banner__actions">
               <button
                 type="button"
                 className="btn btn--primary"
                 onClick={() => apply(FULL_COOKIE_SETTINGS)}
               >
-                Принять
+                {t("cookieConsent.accept")}
               </button>
               <button type="button" className="btn" onClick={openSettings}>
-                Настроить
+                {t("cookieConsent.settings")}
               </button>
             </div>
           </div>
@@ -57,23 +57,17 @@ export default function CookieConsent({ open, onOpenChange }: Props) {
             className="modal cookie-settings"
             role="dialog"
             aria-modal="true"
-            aria-label="Настройки файлов cookie"
+            aria-label={t("cookieConsent.modalAria")}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="cookie-settings__title">Настройки файлов cookie</div>
-            <p className="cookie-settings__intro">
-              Мы используем файлы cookie для работы и улучшения сервиса. Вы можете выбрать,
-              какие категории разрешить.
-            </p>
+            <div className="cookie-settings__title">{t("cookieConsent.modalTitle")}</div>
+            <p className="cookie-settings__intro">{t("cookieConsent.intro")}</p>
 
             <label className="cookie-option">
               <input type="checkbox" checked={true} disabled />
               <span className="cookie-option__body">
-                <span className="cookie-option__name">Необходимые</span>
-                <span className="cookie-option__desc">
-                  Обеспечивают работу сервиса: вход в аккаунт, безопасность и сохранение сессии.
-                  Их нельзя отключить.
-                </span>
+                <span className="cookie-option__name">{t("cookieConsent.necessaryName")}</span>
+                <span className="cookie-option__desc">{t("cookieConsent.necessaryDesc")}</span>
               </span>
             </label>
 
@@ -84,10 +78,8 @@ export default function CookieConsent({ open, onOpenChange }: Props) {
                 onChange={(e) => setDraft({ ...draft, analytics: e.target.checked })}
               />
               <span className="cookie-option__body">
-                <span className="cookie-option__name">Аналитика</span>
-                <span className="cookie-option__desc">
-                  Помогают понимать, как используется сервис, чтобы улучшать его.
-                </span>
+                <span className="cookie-option__name">{t("cookieConsent.analyticsName")}</span>
+                <span className="cookie-option__desc">{t("cookieConsent.analyticsDesc")}</span>
               </span>
             </label>
 
@@ -98,19 +90,17 @@ export default function CookieConsent({ open, onOpenChange }: Props) {
                 onChange={(e) => setDraft({ ...draft, preferences: e.target.checked })}
               />
               <span className="cookie-option__body">
-                <span className="cookie-option__name">Персональные настройки</span>
-                <span className="cookie-option__desc">
-                  Запоминают ваши предпочтения, например тему оформления.
-                </span>
+                <span className="cookie-option__name">{t("cookieConsent.preferencesName")}</span>
+                <span className="cookie-option__desc">{t("cookieConsent.preferencesDesc")}</span>
               </span>
             </label>
 
             <div className="cookie-settings__actions">
               <button type="button" className="btn btn--primary" onClick={() => apply(draft)}>
-                Сохранить настройки
+                {t("cookieConsent.save")}
               </button>
               <button type="button" className="btn" onClick={() => onOpenChange(false)}>
-                Отмена
+                {t("cookieConsent.cancel")}
               </button>
             </div>
           </div>

@@ -1,108 +1,85 @@
+import { useI18n } from "../i18n";
+
 interface Props {
   kind: "privacy" | "cookies";
   onClose: () => void;
 }
 
 function PrivacyContent() {
+  const { t } = useI18n();
   return (
     <>
-      <h3>1. Общие положения</h3>
-      <p>
-        Настоящая Политика обработки персональных данных (далее — «Политика») определяет порядок
-        обработки персональных данных пользователей сервиса ADA — AI Document Assistant (далее —
-        «Сервис») и меры по обеспечению их безопасности.
-      </p>
-      <p>
-        Используя Сервис, вы принимаете Политику и даёте согласие на обработку ваших персональных
-        данных в объёме и для целей, указанных ниже. Согласие может быть отозвано в любой момент.
-      </p>
+      <h3>{t("legal.pr1Title")}</h3>
+      <p>{t("legal.pr1p1")}</p>
+      <p>{t("legal.pr1p2")}</p>
 
-      <h3>2. Какие данные обрабатываются</h3>
-      <p>Мы обрабатываем следующие данные:</p>
+      <h3>{t("legal.pr2Title")}</h3>
+      <p>{t("legal.pr2Lead")}</p>
       <ul>
-        <li>адрес электронной почты, указанный при регистрации;</li>
-        <li>информацию о ваших действиях в Сервисе: загруженные документы, запросы, чаты, даты операций;</li>
-        <li>технические данные, необходимые для работы Сервиса: идентификатор сессии, настройки интерфейса.</li>
+        <li>{t("legal.pr2li1")}</li>
+        <li>{t("legal.pr2li2")}</li>
+        <li>{t("legal.pr2li3")}</li>
       </ul>
 
-      <h3>3. Цели обработки</h3>
-      <p>Данные обрабатываются исключительно для целей:</p>
+      <h3>{t("legal.pr3Title")}</h3>
+      <p>{t("legal.pr3Lead")}</p>
       <ul>
-        <li>создания и поддержания учётной записи;</li>
-        <li>обеспечения работы Сервиса: хранение документов, поиск, анализ и генерация содержимого;</li>
-        <li>обеспечения безопасности и разграничения доступа между пользователями;</li>
-        <li>улучшения качества Сервиса.</li>
+        <li>{t("legal.pr3li1")}</li>
+        <li>{t("legal.pr3li2")}</li>
+        <li>{t("legal.pr3li3")}</li>
+        <li>{t("legal.pr3li4")}</li>
       </ul>
 
-      <h3>4. Хранение и защита данных</h3>
-      <p>
-        Данные хранятся на защищённых серверах. Доступ к ним ограничен и предоставляется только в
-        объёме, необходимом для выполнения задач Сервиса. Работники и автоматизированные системы
-        обрабатывают данные только в рамках указанных целей.
-      </p>
+      <h3>{t("legal.pr4Title")}</h3>
+      <p>{t("legal.pr4p1")}</p>
 
-      <h3>5. Передача данных третьим лицам</h3>
-      <p>
-        Мы не продаём персональные данные. Передача данных третьим лицам возможна только в случаях,
-        предусмотренных законодательством, а также при использовании облачных провайдеров для
-        размещения инфраструктуры, обрабатывающих данные строго по нашему поручению.
-      </p>
+      <h3>{t("legal.pr5Title")}</h3>
+      <p>{t("legal.pr5p1")}</p>
 
-      <h3>6. Права пользователя</h3>
-      <p>Вы имеете право:</p>
+      <h3>{t("legal.pr6Title")}</h3>
+      <p>{t("legal.pr6Lead")}</p>
       <ul>
-        <li>получить информацию об обработке ваших данных;</li>
-        <li>требовать уточнения, блокирования или удаления данных;</li>
-        <li>отозвать согласие на обработку персональных данных, направив запрос в службу поддержки;</li>
-        <li>удалить свой аккаунт и связанные с ним данные.</li>
+        <li>{t("legal.pr6li1")}</li>
+        <li>{t("legal.pr6li2")}</li>
+        <li>{t("legal.pr6li3")}</li>
+        <li>{t("legal.pr6li4")}</li>
       </ul>
 
-      <h3>7. Заключительные положения</h3>
-      <p>
-        Политика может изменяться. Актуальная версия всегда доступна на этой странице. Продолжая
-        использовать Сервис после изменений, вы принимаете обновлённую Политику.
-      </p>
+      <h3>{t("legal.pr7Title")}</h3>
+      <p>{t("legal.pr7p1")}</p>
     </>
   );
 }
 
 function CookiesContent() {
+  const { t } = useI18n();
   return (
     <>
-      <h3>Что такое файлы cookie</h3>
-      <p>
-        Файлы cookie — это небольшие текстовые данные, которые сохраняются в вашем браузере и
-        позволяют Сервису запоминать ваши предпочтения и корректно работать.
-      </p>
+      <h3>{t("legal.cc1Title")}</h3>
+      <p>{t("legal.cc1p1")}</p>
 
-      <h3>Какие cookie мы используем</h3>
+      <h3>{t("legal.cc2Title")}</h3>
       <ul>
         <li>
-          <strong>Необходимые</strong> — обеспечивают вход в аккаунт, безопасность и сохранение
-          сессии. Без них Сервис не может работать корректно.
+          <strong>{t("legal.ccNecessaryName")}</strong> — {t("legal.ccNecessaryText")}
         </li>
         <li>
-          <strong>Аналитика</strong> — помогают понимать, как используется Сервис, чтобы улучшать
-          его.
+          <strong>{t("legal.ccAnalyticsName")}</strong> — {t("legal.ccAnalyticsText")}
         </li>
         <li>
-          <strong>Персональные настройки</strong> — запоминают ваши предпочтения, например тему
-          оформления или просмотр предупреждений.
+          <strong>{t("legal.ccPrefsName")}</strong> — {t("legal.ccPrefsText")}
         </li>
       </ul>
 
-      <h3>Как управлять cookie</h3>
-      <p>
-        Вы можете настроить использование cookie в блоке настроек, открываемом на этой странице,
-        или в настройках вашего браузера. Отключение необходимых cookie может привести к
-        некорректной работе Сервиса.
-      </p>
+      <h3>{t("legal.cc3Title")}</h3>
+      <p>{t("legal.cc3p1")}</p>
     </>
   );
 }
 
 export default function LegalPage({ kind, onClose }: Props) {
-  const title = kind === "privacy" ? "Политика обработки персональных данных" : "Политика использования файлов cookie";
+  const { t } = useI18n();
+  const title = kind === "privacy" ? t("legal.titlePrivacy") : t("legal.titleCookies");
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
@@ -114,18 +91,18 @@ export default function LegalPage({ kind, onClose }: Props) {
       >
         <div className="legal__head">
           <div className="legal__brand">ADA</div>
-          <button type="button" className="legal__close" onClick={onClose} aria-label="Закрыть">
+          <button type="button" className="legal__close" onClick={onClose} aria-label={t("legal.closeAria")}>
             ✕
           </button>
         </div>
         <div className="legal__title">{title}</div>
         <div className="legal__body">
-          <p className="legal__updated">Дата вступления в силу: 16 августа 2026 года.</p>
+          <p className="legal__updated">{t("legal.updated")}</p>
           {kind === "privacy" ? <PrivacyContent /> : <CookiesContent />}
         </div>
         <div className="legal__actions">
           <button type="button" className="btn btn--primary" onClick={onClose}>
-            Закрыть
+            {t("legal.close")}
           </button>
         </div>
       </div>

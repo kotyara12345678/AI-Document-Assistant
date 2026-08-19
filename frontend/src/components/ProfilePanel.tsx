@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { changePassword, deleteMe, fetchUsageStats, updateProfileAvatar } from "../api";
 import type { UsageStats, UserOut } from "../types";
+import { useI18n } from "../i18n";
 
 const MAX_AVATAR_BYTES = 1_000_000;
 
@@ -14,11 +15,8 @@ interface ProfilePanelProps {
   onDeleted?: () => void;
 }
 
-function formatTokens(n: number): string {
-  return new Intl.NumberFormat("ru-RU").format(n);
-}
-
 export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onToggleTheme, onLogout, onDeleted }: ProfilePanelProps) {
+  const { t, formatNumber } = useI18n();
   const [avatar, setAvatar] = useState<string | null>(user.avatar_url ?? null);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
@@ -55,11 +53,11 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
       setAvatarError(null);
       if (!file) return;
       if (!file.type.startsWith("image/")) {
-        setAvatarError("Выберите файл изображения (PNG, JPG и т.п.)");
+        setAvatarError(t("profile.avatarTypeError"));
         return;
       }
       if (file.size > MAX_AVATAR_BYTES) {
-        setAvatarError("Файл слишком большой — максимум 1 МБ");
+        setAvatarError(t("profile.avatarSizeError"));
         return;
       }
       const reader = new FileReader();
@@ -71,14 +69,14 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
           updateProfileAvatar(result)
             .then(onUserUpdated)
             .catch((err: unknown) => {
-              setAvatarError(err instanceof Error ? err.message : "Не удалось сохранить фото");
+              setAvatarError(err instanceof Error ? err.message : t("profile.avatarSaveFail"));
             })
             .finally(() => setAvatarBusy(false));
         }
       };
       reader.readAsDataURL(file);
     },
-    [onUserUpdated]
+    [onUserUpdated, t]
   );
 
   const removeAvatar = useCallback(async () => {
@@ -89,11 +87,11 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
       const updated = await updateProfileAvatar(null);
       onUserUpdated(updated);
     } catch (err) {
-      setAvatarError(err instanceof Error ? err.message : "Не удалось удалить фото");
+      setAvatarError(err instanceof Error ? err.message : t("profile.avatarRemoveFail"));
     } finally {
       setAvatarBusy(false);
     }
-  }, [onUserUpdated]);
+  }, [onUserUpdated, t]);
 
   const submitPassword = useCallback(
     async (e: React.FormEvent) => {
@@ -101,11 +99,11 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
       setPasswordMsg(null);
       setPasswordError(null);
       if (newPassword.length < 6) {
-        setPasswordError("Пароль должен быть не короче 8 символов");
+        setPasswordError(t("profile.pwdTooShort"));
         return;
       }
       if (newPassword !== newPasswordConfirm) {
-        setPasswordError("Пароли не совпадают");
+        setPasswordError(t("profile.pwdMismatch"));
         return;
       }
       setPasswordBusy(true);
@@ -115,20 +113,18 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
         setCurrentPassword("");
         setNewPassword("");
         setNewPasswordConfirm("");
-        setPasswordMsg("Пароль успешно изменён");
+        setPasswordMsg(t("profile.pwdChanged"));
       } catch (err) {
-        setPasswordError(err instanceof Error ? err.message : "Не удалось изменить пароль");
+        setPasswordError(err instanceof Error ? err.message : t("profile.pwdChangeFail"));
       } finally {
         setPasswordBusy(false);
       }
     },
-    [currentPassword, newPassword, newPasswordConfirm, onUserUpdated]
+    [currentPassword, newPassword, newPasswordConfirm, onUserUpdated, t]
   );
 
   const confirmDelete = useCallback(() => {
-    const ok = window.confirm(
-      "Удалить аккаунт? Ваши документы, чаты и данные станут недоступны. Это действие нельзя отменить."
-    );
+    const ok = window.confirm(t("profile.deleteConfirm"));
     if (!ok) return;
     setDeleteError(null);
     setDeleting(true);
@@ -136,26 +132,26 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
       .then(onDeleted)
       .catch((err: unknown) => {
         setDeleting(false);
-        setDeleteError(err instanceof Error ? err.message : "Не удалось удалить аккаунт");
+        setDeleteError(err instanceof Error ? err.message : t("profile.deleteFail"));
       });
-  }, [onDeleted]);
+  }, [onDeleted, t]);
 
   return (
     <div className="profile-page">
       <header className="profile-page__header">
         <button className="profile-page__back" onClick={onBack}>
-          ← Назад к чату
+          {t("profile.backToChat")}
         </button>
-        <h1 className="profile-page__title">Личный кабинет</h1>
+        <h1 className="profile-page__title">{t("profile.title")}</h1>
         <div className="profile-page__spacer" />
       </header>
 
       <div className="profile-page__body">
         <section className="profile-card">
-          <h2 className="profile-card__title">Фото профиля</h2>
+          <h2 className="profile-card__title">{t("profile.avatarTitle")}</h2>
           <div className="profile-avatar-row">
             {avatar ? (
-              <img className="profile-avatar profile-avatar--lg" src={avatar} alt="Фото профиля" />
+              <img className="profile-avatar profile-avatar--lg" src={avatar} alt={t("profile.avatarAlt")} />
             ) : (
               <span className="profile-avatar profile-avatar--lg profile-avatar--fallback">
                 {user.email.slice(0, 1).toUpperCase()}
@@ -163,11 +159,11 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
             )}
             <div className="profile-avatar-actions">
               <button className="modal__btn" onClick={() => fileRef.current?.click()} disabled={avatarBusy}>
-                {avatarBusy ? "Сохранение…" : "Загрузить фото"}
+                {avatarBusy ? t("profile.saving") : t("profile.uploadPhoto")}
               </button>
               {avatar && (
                 <button className="modal__btn" onClick={() => void removeAvatar()} disabled={avatarBusy}>
-                  Удалить
+                  {t("profile.remove")}
                 </button>
               )}
               <input
@@ -183,12 +179,12 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
         </section>
 
         <section className="profile-card">
-          <h2 className="profile-card__title">Смена пароля</h2>
+          <h2 className="profile-card__title">{t("profile.passwordTitle")}</h2>
           <form className="profile-form" onSubmit={(e) => void submitPassword(e)}>
             <input
               className="profile-input"
               type="password"
-              placeholder="Текущий пароль"
+              placeholder={t("profile.currentPasswordPh")}
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               autoComplete="current-password"
@@ -196,7 +192,7 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
             <input
               className="profile-input"
               type="password"
-              placeholder="Новый пароль (мин. 8 символов)"
+              placeholder={t("profile.newPasswordPh")}
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
@@ -204,7 +200,7 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
             <input
               className="profile-input"
               type="password"
-              placeholder="Повторите новый пароль"
+              placeholder={t("profile.repeatPasswordPh")}
               value={newPasswordConfirm}
               onChange={(e) => setNewPasswordConfirm(e.target.value)}
               autoComplete="new-password"
@@ -212,47 +208,47 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
             {passwordError && <div className="profile-error">{passwordError}</div>}
             {passwordMsg && <div className="profile-ok">{passwordMsg}</div>}
             <button className="modal__btn profile-form__submit" type="submit" disabled={passwordBusy || !currentPassword}>
-              {passwordBusy ? "Сохранение…" : "Изменить пароль"}
+              {passwordBusy ? t("profile.saving") : t("profile.changePasswordBtn")}
             </button>
           </form>
         </section>
 
         <section className="profile-card">
-          <h2 className="profile-card__title">Использование токенов</h2>
+          <h2 className="profile-card__title">{t("profile.tokensTitle")}</h2>
           {stats ? (
             <div className="profile-stats">
               <div className="profile-stats__row">
-                <span>Всего</span>
-                <b>{formatTokens(stats.total_tokens)}</b>
+                <span>{t("profile.statTotal")}</span>
+                <b>{formatNumber(stats.total_tokens)}</b>
               </div>
               <div className="profile-stats__row">
-                <span>Сегодня</span>
-                <b>{formatTokens(stats.tokens_today)}</b>
+                <span>{t("profile.statToday")}</span>
+                <b>{formatNumber(stats.tokens_today)}</b>
               </div>
               <div className="profile-stats__row">
-                <span>За 7 дней</span>
-                <b>{formatTokens(stats.tokens_7d)}</b>
+                <span>{t("profile.stat7d")}</span>
+                <b>{formatNumber(stats.tokens_7d)}</b>
               </div>
               <div className="profile-stats__row">
-                <span>За 30 дней</span>
-                <b>{formatTokens(stats.tokens_30d)}</b>
+                <span>{t("profile.stat30d")}</span>
+                <b>{formatNumber(stats.tokens_30d)}</b>
               </div>
               <div className="profile-stats__row">
-                <span>Запросов</span>
-                <b>{formatTokens(stats.requests)}</b>
+                <span>{t("profile.statRequests")}</span>
+                <b>{formatNumber(stats.requests)}</b>
               </div>
             </div>
           ) : (
-            <div className="profile-stats__empty">Загружаем статистику…</div>
+            <div className="profile-stats__empty">{t("profile.statsLoading")}</div>
           )}
         </section>
 
         <section className="profile-card">
-          <h2 className="profile-card__title">Тема и вход</h2>
+          <h2 className="profile-card__title">{t("profile.themeTitle")}</h2>
           <div className="profile-settings-row">
-            <span>Тема оформления</span>
+            <span>{t("profile.themeLabel")}</span>
             <button className="profile-theme-btn" onClick={onToggleTheme}>
-              {theme === "dark" ? "☀️ Светлая" : "🌙 Тёмная"}
+              {theme === "dark" ? t("profile.themeLight") : t("profile.themeDark")}
             </button>
           </div>
           <button className="profile-logout-btn" onClick={onLogout}>
@@ -260,16 +256,14 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
               <path d="M16.8 2H14.2C11 2 9 4 9 7.2V11.25H15.25C15.66 11.25 16 11.59 16 12C16 12.41 15.66 12.75 15.25 12.75H9V16.8C9 20 11 22 14.2 22H16.79C19.99 22 21.99 20 21.99 16.8V7.2C22 4 20 2 16.8 2Z" />
               <path d="M4.55994 11.2498L6.62994 9.17984C6.77994 9.02984 6.84994 8.83984 6.84994 8.64984C6.84994 8.45984 6.77994 8.25984 6.62994 8.11984C6.33994 7.82984 5.85994 7.82984 5.56994 8.11984L2.21994 11.4698C1.92994 11.7598 1.92994 12.2398 2.21994 12.5298L5.56994 15.8798C5.85994 16.1698 6.33994 16.1698 6.62994 15.8798C6.91994 15.5898 6.91994 15.1098 6.62994 14.8198L4.55994 12.7498H8.99994V11.2498H4.55994Z" />
             </svg>
-            Выйти
+            {t("profile.logout")}
           </button>
         </section>
 
         {onDeleted && (
           <section className="profile-card profile-card--danger">
-            <h2 className="profile-card__title">Опасная зона</h2>
-            <p className="profile-danger-text">
-              Удаление аккаунта делает недоступными все ваши документы и чаты. Это действие нельзя отменить.
-            </p>
+            <h2 className="profile-card__title">{t("profile.dangerTitle")}</h2>
+            <p className="profile-danger-text">{t("profile.dangerText")}</p>
             {deleteError && <div className="profile-error">{deleteError}</div>}
             <button
               type="button"
@@ -277,7 +271,7 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
               onClick={confirmDelete}
               disabled={deleting}
             >
-              {deleting ? "Удаляем…" : "Удалить аккаунт"}
+              {deleting ? t("profile.deleting") : t("profile.deleteAccount")}
             </button>
           </section>
         )}

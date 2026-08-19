@@ -28,6 +28,8 @@ import ComparePanel from "./components/ComparePanel";
 import Library from "./components/Library";
 import { hasSeenUploadWarning, markUploadWarningSeen } from "./consent";
 import CopyableBlock, { extractCodeBlock } from "./codeBlock";
+import { useI18n } from "./i18n";
+import LanguageSwitcher from "./components/LanguageSwitcher";
 
 interface Message {
   id: number;
@@ -54,14 +56,6 @@ function nextLocalId(): number {
   return -(++localMsgId);
 }
 
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
-}
-
 function fileIcon(fileType: string): string {
   switch (fileType) {
     case "pdf":
@@ -75,13 +69,8 @@ function fileIcon(fileType: string): string {
   }
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 export default function App() {
+  const { t, formatBytes } = useI18n();
   const [user, setUser] = useState<UserOut | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
@@ -367,19 +356,19 @@ export default function App() {
     try {
       setDocuments(await fetchDocuments());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось загрузить документы");
+      setError(err instanceof Error ? err.message : t("app.errorLoadDocuments"));
     } finally {
       setDocsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const refreshChats = useCallback(async () => {
     try {
       setChats(await fetchChats());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось загрузить чаты");
+      setError(err instanceof Error ? err.message : t("app.errorLoadChats"));
     }
-  }, []);
+  }, [t]);
 
   const selectChat = useCallback(
     async (chatId: number) => {
@@ -401,12 +390,12 @@ export default function App() {
             }))
           );
         } catch (err) {
-          setError(err instanceof Error ? err.message : "Не удалось загрузить сообщения");
+          setError(err instanceof Error ? err.message : t("app.errorLoadMessages"));
         } finally {
           setMessagesLoading(false);
         }
       },
-    []
+    [t]
   );
 
   // Initial load: documents, chats and the last active chat.
@@ -444,7 +433,7 @@ export default function App() {
           localStorage.setItem("docsearch-active-chat", String(chat.id));
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Не удалось загрузить чаты");
+        if (!cancelled) setError(err instanceof Error ? err.message : t("app.errorLoadChats"));
       } finally {
         if (!cancelled) setChatsLoading(false);
       }
@@ -452,7 +441,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadDocuments, user]);
+  }, [loadDocuments, user, t]);
 
   const newChat = useCallback(async () => {
     setSidebarOpen(false);
@@ -464,9 +453,9 @@ export default function App() {
       setMessages([]);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось создать чат");
+      setError(err instanceof Error ? err.message : t("app.errorCreateChat"));
     }
-  }, []);
+  }, [t]);
 
   const removeChat = useCallback(
     async (chatId: number) => {
@@ -484,28 +473,28 @@ export default function App() {
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось удалить чат");
+        setError(err instanceof Error ? err.message : t("app.errorDeleteChat"));
       }
     },
-    [chats, activeChatId, selectChat]
+    [chats, activeChatId, selectChat, t]
   );
 
   const renameChatNow = useCallback(
     async (chat: ChatOut) => {
       setChatMenuFor(null);
-      const next = window.prompt("Название чата:", chat.title);
+      const next = window.prompt(t("app.chatNamePrompt"), chat.title);
       if (next === null) return;
       const title = next.trim();
       if (!title || title === chat.title) return;
       try {
         const updated = await renameChat(chat.id, title);
         setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-        flashNotice("Чат переименован.");
+        flashNotice(t("app.noticeChatRenamed"));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось переименовать чат");
+        setError(err instanceof Error ? err.message : t("app.errorRenameChat"));
       }
     },
-    [flashNotice]
+    [flashNotice, t]
   );
 
   const openDocument = useCallback(async (id: number, highlights: string[] = []) => {
@@ -517,12 +506,12 @@ export default function App() {
     try {
       setViewer(await fetchDocumentContent(id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось открыть содержимое документа");
+      setError(err instanceof Error ? err.message : t("app.errorOpenContent"));
       setViewer(null);
     } finally {
       setViewerLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const openDocumentById = useCallback(
     (doc: DocumentOut) => {
@@ -560,9 +549,9 @@ export default function App() {
       setDocuments((prev) => [doc, ...prev]);
       setError(null);
       void openDocument(doc.id);
-      flashNotice(`Документ «${doc.original_filename}» загружен и проиндексирован.`);
+      flashNotice(t("app.noticeDocUploaded", { name: doc.original_filename }));
     },
-    [openDocument, flashNotice]
+    [openDocument, flashNotice, t]
   );
 
   const runUpload = useCallback(
@@ -571,10 +560,10 @@ export default function App() {
         const docs = await uploadDocuments(files);
         docs.forEach((doc) => onUploaded(doc));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось загрузить документы");
+        setError(err instanceof Error ? err.message : t("dropzone.error"));
       }
     },
-    [onUploaded]
+    [onUploaded, t]
   );
 
   const requestUpload = useCallback(
@@ -599,17 +588,17 @@ export default function App() {
 
   const removeDocument = useCallback(
     async (doc: DocumentOut) => {
-      if (!window.confirm(`Удалить «${doc.original_filename}» и его индекс?`)) return;
+      if (!window.confirm(t("app.confirmDeleteDoc", { name: doc.original_filename }))) return;
       try {
         await deleteDocument(doc.id);
         setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
         if (viewer?.id === doc.id) closeViewer();
-        flashNotice(`Документ «${doc.original_filename}» удалён.`);
+        flashNotice(t("app.noticeDocDeleted", { name: doc.original_filename }));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось удалить документ");
+        setError(err instanceof Error ? err.message : t("app.errorDeleteDoc"));
       }
     },
-    [viewer, closeViewer, flashNotice]
+    [viewer, closeViewer, flashNotice, t]
   );
 
   const saveDocument = useCallback(
@@ -618,25 +607,25 @@ export default function App() {
       setError(null);
       try {
         await downloadDocument(doc.id, doc.original_filename);
-        flashNotice(`«${doc.original_filename}» скачан.`);
+        flashNotice(t("app.noticeDocDownloaded", { name: doc.original_filename }));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Не удалось скачать документ");
+        setError(err instanceof Error ? err.message : t("app.errorDownloadDoc"));
       }
     },
-    [flashNotice]
+    [flashNotice, t]
   );
 
   const clearAllDocuments = useCallback(async () => {
-    if (!window.confirm("Удалить ВСЕ документы и их индексы?")) return;
+    if (!window.confirm(t("app.confirmDeleteAllDocs"))) return;
     try {
       await deleteAllDocuments();
       setDocuments([]);
       closeViewer();
-      flashNotice("Все документы удалены.");
+      flashNotice(t("app.noticeAllDocsDeleted"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось удалить документы");
+      setError(err instanceof Error ? err.message : t("app.errorDeleteDocs"));
     }
-  }, [closeViewer, flashNotice]);
+  }, [closeViewer, flashNotice, t]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -644,7 +633,7 @@ export default function App() {
       if (!trimmed || loading) return;
 
       if (activeChatId == null) {
-        setError("Нет активного чата. Сначала создайте чат.");
+        setError(t("app.errorNoActiveChat"));
         return;
       }
 
@@ -722,7 +711,7 @@ export default function App() {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId
-              ? { ...m, text: err instanceof Error ? err.message : "Что-то пошло не так", error: true }
+              ? { ...m, text: err instanceof Error ? err.message : t("app.errorGeneric"), error: true }
               : m
           )
         );
@@ -730,7 +719,7 @@ export default function App() {
         setLoading(false);
       }
     },
-    [loading, activeChatId, refreshChats, contextDocs]
+    [loading, activeChatId, refreshChats, contextDocs, t]
   );
 
   const openSource = useCallback(
@@ -745,7 +734,7 @@ export default function App() {
       <div className="auth">
         <div className="auth__loading">
           <div className="auth__spinner" />
-          <span>Загружаем сессию…</span>
+          <span>{t("app.sessionLoading")}</span>
         </div>
       </div>
     );
@@ -757,13 +746,13 @@ export default function App() {
 
   return (
     <div className={`layout ${sidebarCollapsed ? "layout--no-sidebar" : ""}`}>
-      <nav className="sidebar-rail" aria-label="Быстрый доступ">
+      <nav className="sidebar-rail" aria-label={t("app.navQuick")}>
         <button
           type="button"
           className="sidebar-rail__toggle"
           onClick={toggleSidebar}
-          aria-label="Показать панель"
-          title="Показать панель"
+          aria-label={t("app.showPanel")}
+          title={t("app.showPanel")}
         >
           <svg className="collapse-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M9 22H15C20 22 22 20 22 15V9C22 4 20 2 15 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -776,8 +765,8 @@ export default function App() {
             type="button"
             className="sidebar-rail__btn"
             onClick={() => void newChat()}
-            title="Создать чат"
-            aria-label="Создать чат"
+            title={t("app.createChat")}
+            aria-label={t("app.createChat")}
           >
             <svg className="rail-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M11 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22H15C20 22 22 20 22 15V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -789,8 +778,8 @@ export default function App() {
             type="button"
             className="sidebar-rail__btn"
             onClick={() => { setShowLibrary((v) => !v); setShowAdmin(false); setShowProfile(false); }}
-            title="Библиотека"
-            aria-label="Библиотека"
+            title={t("app.library")}
+            aria-label={t("app.library")}
           >
             <svg className="rail-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M21 7V17C21 20 19.5 22 16 22H8C4.5 22 3 20 3 17V7C3 4 4.5 2 8 2H16C19.5 2 21 4 21 7Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
@@ -804,8 +793,8 @@ export default function App() {
               type="button"
               className="sidebar-rail__btn"
               onClick={() => setRailChatsOpen((v) => !v)}
-              title="Недавние чаты"
-              aria-label="Недавние чаты"
+              title={t("app.recentChats")}
+              aria-label={t("app.recentChats")}
             >
               <svg className="rail-icon" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <g clipPath="url(#rail-chats-clip)">
@@ -826,11 +815,11 @@ export default function App() {
               <>
                 <div className="doc-menu-backdrop" onClick={() => setRailChatsOpen(false)} />
                 <div className="rail-chats">
-                  <div className="rail-chats__title">Недавние чаты</div>
+                  <div className="rail-chats__title">{t("app.recentChats")}</div>
                   {chatsLoading ? (
-                    <div className="rail-chats__empty">Загружаем…</div>
+                    <div className="rail-chats__empty">{t("app.loadingChats")}</div>
                   ) : chats.length === 0 ? (
-                    <div className="rail-chats__empty">Чатов пока нет.</div>
+                    <div className="rail-chats__empty">{t("app.noChats")}</div>
                   ) : (
                     [...chats].slice(0, 10).map((chat) => (
                       <button
@@ -858,10 +847,10 @@ export default function App() {
             setShowAdmin(false);
             setShowLibrary(false);
           }}
-          title="Личный кабинет"
+          title={t("app.profile")}
         >
           {user.avatar_url ? (
-            <img className="sidebar-rail__avatar-img" src={user.avatar_url} alt="Фото профиля" />
+            <img className="sidebar-rail__avatar-img" src={user.avatar_url} alt={t("app.avatarAlt")} />
           ) : (
             <span className="sidebar-rail__avatar-letter">{user.email.slice(0, 1).toUpperCase()}</span>
           )}
@@ -886,12 +875,13 @@ export default function App() {
         <div className="sidebar__header">
           <span className="sidebar__brand">ADA</span>
           <div className="sidebar__actions">
+            <LanguageSwitcher className="sidebar__lang" />
             <button
               type="button"
               className="sidebar__collapse-btn"
               onClick={toggleSidebar}
-              aria-label="Скрыть панель"
-              title="Скрыть панель"
+              aria-label={t("app.hidePanel")}
+              title={t("app.hidePanel")}
             >
               <svg className="collapse-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M9 22H15C20 22 22 20 22 15V9C22 4 20 2 15 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -901,17 +891,17 @@ export default function App() {
             <button
               className="sidebar__close-btn"
               onClick={() => setSidebarOpen(false)}
-              title="Закрыть меню"
-              aria-label="Закрыть меню"
+              title={t("app.closeMenu")}
+              aria-label={t("app.closeMenu")}
             >
               ✕
             </button>
           </div>
         </div>
 
-<button className="sidebar__user" onClick={() => { setShowProfile(true); setShowAdmin(false); setShowLibrary(false); setSidebarOpen(false); }} title="Личный кабинет">
+<button className="sidebar__user" onClick={() => { setShowProfile(true); setShowAdmin(false); setShowLibrary(false); setSidebarOpen(false); }} title={t("app.profile")}>
           {user.avatar_url ? (
-            <img className="sidebar__user-avatar" src={user.avatar_url} alt="Фото профиля" />
+            <img className="sidebar__user-avatar" src={user.avatar_url} alt={t("app.avatarAlt")} />
           ) : (
             <span className="sidebar__user-avatar">{user.email.slice(0, 1).toUpperCase()}</span>
           )}
@@ -921,10 +911,10 @@ export default function App() {
             </div>
             <div className="sidebar__user-meta">
               {user.role === "admin"
-                ? "Администратор"
+                ? t("app.roleAdmin")
                 : user.role === "moderator"
-                  ? "Модератор"
-                  : "Пользователь"}
+                  ? t("app.roleModerator")
+                  : t("app.roleUser")}
             </div>
           </div>
         </button>
@@ -932,26 +922,26 @@ export default function App() {
         {user.role === "admin" && (
           <div className="sidebar__section">
 <button className="btn--admin" onClick={() => { setSidebarOpen(false); setShowAdmin((v) => !v); setShowProfile(false); setShowLibrary(false); }}>
-              {showAdmin ? "◀ К чату" : "⚙ Админ-панель"}
+              {showAdmin ? t("app.backToChat") : t("app.adminButton")}
             </button>
           </div>
         )}
 
         <div className="sidebar__section sidebar__section--scroll">
-          <div className="sidebar__section-title">Чаты</div>
+          <div className="sidebar__section-title">{t("app.chats")}</div>
           <button className="btn--new-chat" onClick={() => void newChat()}>
             <svg className="new-chat-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M11 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22H15C20 22 22 20 22 15V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M16.0399 3.01928L8.15988 10.8993C7.85988 11.1993 7.55988 11.7893 7.49988 12.2193L7.06988 15.2293C6.90988 16.3193 7.67988 17.0793 8.76988 16.9293L11.7799 16.4993C12.1999 16.4393 12.7899 16.1393 13.0999 15.8393L20.9799 7.95928C22.3399 6.59928 22.9799 5.01928 20.9799 3.01928C18.9799 1.01928 17.3999 1.65928 16.0399 3.01928Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M14.9102 4.15039C15.5802 6.54039 17.4502 8.41039 19.8502 9.09039" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            Новый чат
+            {t("app.newChat")}
           </button>
           <button
             type="button"
             className="btn--new-chat"
             onClick={() => { setSidebarOpen(false); setShowLibrary((v) => !v); setShowAdmin(false); setShowProfile(false); }}
-            title="Библиотека сгенерированных файлов"
+            title={t("app.libraryTitle")}
           >
             <svg className="new-chat-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M21 7V17C21 20 19.5 22 16 22H8C4.5 22 3 20 3 17V7C3 4 4.5 2 8 2H16C19.5 2 21 4 21 7Z" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
@@ -959,12 +949,12 @@ export default function App() {
               <path d="M13.25 14H17.5" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M9 18H17.5" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            Библиотека
+            {t("app.library")}
           </button>
           {chatsLoading ? (
-            <div className="empty">Загружаем чаты…</div>
+            <div className="empty">{t("app.loadingChats")}</div>
           ) : chats.length === 0 ? (
-            <div className="empty">Чатов пока нет.</div>
+            <div className="empty">{t("app.noChats")}</div>
           ) : (
             chats.map((chat) => (
               <div
@@ -978,8 +968,8 @@ export default function App() {
                   )}
                   <button
                     className="chat-item__menu"
-                    title="Действия с чатом"
-                    aria-label="Действия с чатом"
+                    title={t("app.chatActions")}
+                    aria-label={t("app.chatActions")}
                     onClick={(e) => {
                       e.stopPropagation();
                       setChatMenuFor((cur) => (cur === chat.id ? null : chat.id));
@@ -1001,7 +991,7 @@ export default function App() {
                           <path d="M11.89 5.05078C12.32 7.81078 14.56 9.92078 17.34 10.2008" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
                           <path d="M3 22H21" stroke="currentColor" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
-                        Переименовать
+                        {t("app.rename")}
                       </button>
                       <button
                         className="doc-menu__item doc-menu__item--danger"
@@ -1015,7 +1005,7 @@ export default function App() {
                           <path d="M21.0699 5.23C19.4599 5.07 17.8499 4.95 16.2299 4.86V4.85L16.0099 3.55C15.8599 2.63 15.6399 1.25 13.2999 1.25H10.6799C8.34991 1.25 8.12991 2.57 7.96991 3.54L7.75991 4.82C6.82991 4.88 5.89991 4.94 4.96991 5.03L2.92991 5.23C2.50991 5.27 2.20991 5.64 2.24991 6.05C2.28991 6.46 2.64991 6.76 3.06991 6.72L5.10991 6.52C10.3499 6 15.6299 6.2 20.9299 6.73C20.9599 6.73 20.9799 6.73 21.0099 6.73C21.3899 6.73 21.7199 6.44 21.7599 6.05C21.7899 5.64 21.4899 5.27 21.0699 5.23Z" />
                           <path d="M19.23 8.14C18.99 7.89 18.66 7.75 18.32 7.75H5.67999C5.33999 7.75 4.99999 7.89 4.76999 8.14C4.53999 8.39 4.40999 8.73 4.42999 9.08L5.04999 19.34C5.15999 20.86 5.29999 22.76 8.78999 22.76H15.21C18.7 22.76 18.84 20.87 18.95 19.34L19.57 9.09C19.59 8.73 19.46 8.39 19.23 8.14ZM13.66 17.75H10.33C9.91999 17.75 9.57999 17.41 9.57999 17C9.57999 16.59 9.91999 16.25 10.33 16.25H13.66C14.07 16.25 14.41 16.59 14.41 17C14.41 17.41 14.07 17.75 13.66 17.75ZM14.5 13.75H9.49999C9.08999 13.75 8.74999 13.41 8.74999 13C8.74999 12.59 9.08999 12.25 9.49999 12.25H14.5C14.91 12.25 15.25 12.59 15.25 13C15.25 13.41 14.91 13.75 14.5 13.75Z" />
                         </svg>
-                        Удалить чат
+                        {t("app.deleteChat")}
                       </button>
                     </div>
                   )}
@@ -1031,17 +1021,17 @@ export default function App() {
 
         <div className="sidebar__section sidebar__section--scroll">
           <div className="sidebar__section-title-row">
-            <div className="sidebar__section-title">Документы</div>
+            <div className="sidebar__section-title">{t("app.documents")}</div>
             {documents.length > 0 && (
               <button className="btn--link" onClick={() => void clearAllDocuments()}>
-                Очистить всё
+                {t("app.clearAll")}
               </button>
             )}
           </div>
           {docsLoading ? (
-            <div className="empty">Загружаем документы…</div>
+            <div className="empty">{t("app.loadingDocuments")}</div>
           ) : documents.length === 0 ? (
-            <div className="empty">Документов пока нет. Загрузите первый файл.</div>
+            <div className="empty">{t("app.noDocuments")}</div>
           ) : (
             documents.map((doc) => (
               <div
@@ -1051,7 +1041,7 @@ export default function App() {
                 }`}
                 onClick={() => void openDocument(doc.id)}
                 onDoubleClick={() => toggleContextDoc(doc.id)}
-                title="Открыть (один клик) · закрепить как контекст (двойной клик)"
+                title={t("app.docItemTitle")}
               >
                 <div className="doc-item__icon">{fileIcon(doc.file_type)}</div>
                 <div className="doc-item__body">
@@ -1066,8 +1056,8 @@ export default function App() {
                   )}
                   <button
                     className="doc-item__menu"
-                    title="Действия с документом"
-                    aria-label="Действия с документом"
+                    title={t("app.docActions")}
+                    aria-label={t("app.docActions")}
                     onClick={(e) => {
                       e.stopPropagation();
                       setDocMenuFor((cur) => (cur === doc.id ? null : doc.id));
@@ -1084,7 +1074,7 @@ export default function App() {
                           void saveDocument(doc);
                         }}
                       >
-                        Скачать файл
+                        {t("app.downloadFile")}
                       </button>
                       <button
                         className="doc-menu__item"
@@ -1094,7 +1084,7 @@ export default function App() {
                           openCompare(doc.id);
                         }}
                       >
-                        Сравнить
+                        {t("app.compare")}
                       </button>
                       <button
                         className="doc-menu__item doc-menu__item--danger"
@@ -1108,7 +1098,7 @@ export default function App() {
                           <path d="M21.0699 5.23C19.4599 5.07 17.8499 4.95 16.2299 4.86V4.85L16.0099 3.55C15.8599 2.63 15.6399 1.25 13.2999 1.25H10.6799C8.34991 1.25 8.12991 2.57 7.96991 3.54L7.75991 4.82C6.82991 4.88 5.89991 4.94 4.96991 5.03L2.92991 5.23C2.50991 5.27 2.20991 5.64 2.24991 6.05C2.28991 6.46 2.64991 6.76 3.06991 6.72L5.10991 6.52C10.3499 6 15.6299 6.2 20.9299 6.73C20.9599 6.73 20.9799 6.73 21.0099 6.73C21.3899 6.73 21.7199 6.44 21.7599 6.05C21.7899 5.64 21.4899 5.27 21.0699 5.23Z" />
                           <path d="M19.23 8.14C18.99 7.89 18.66 7.75 18.32 7.75H5.67999C5.33999 7.75 4.99999 7.89 4.76999 8.14C4.53999 8.39 4.40999 8.73 4.42999 9.08L5.04999 19.34C5.15999 20.86 5.29999 22.76 8.78999 22.76H15.21C18.7 22.76 18.84 20.87 18.95 19.34L19.57 9.09C19.59 8.73 19.46 8.39 19.23 8.14ZM13.66 17.75H10.33C9.91999 17.75 9.57999 17.41 9.57999 17C9.57999 16.59 9.91999 16.25 10.33 16.25H13.66C14.07 16.25 14.41 16.59 14.41 17C14.41 17.41 14.07 17.75 13.66 17.75ZM14.5 13.75H9.49999C9.08999 13.75 8.74999 13.41 8.74999 13C8.74999 12.59 9.08999 12.25 9.49999 12.25H14.5C14.91 12.25 15.25 12.59 15.25 13C15.25 13.41 14.91 13.75 14.5 13.75Z" />
                         </svg>
-                        Удалить файл
+                        {t("app.deleteFile")}
                       </button>
                     </div>
                   )}
@@ -1150,18 +1140,18 @@ export default function App() {
           <div className="chat__header">
             <div className="chat__header-main">
               <div className="chat__header-title">
-                {chats.find((c) => c.id === activeChatId)?.title ?? "Спросите о документах"}
+                {chats.find((c) => c.id === activeChatId)?.title ?? t("app.askTitle")}
               </div>
               <div className="chat__header-sub">
-                Поиск по {documents.length} {plural(documents.length, "документу", "документам", "документам")}
+                {t("app.searchByCount", { count: documents.length })}
               </div>
             </div>
             <button
               type="button"
               className="chat__menu-btn"
               onClick={() => toggleSidebar()}
-              aria-label={sidebarCollapsed ? "Показать боковую панель" : "Скрыть боковую панель"}
-              title={sidebarCollapsed ? "Показать боковую панель" : "Скрыть боковую панель"}
+              aria-label={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
+              title={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
             >
               <span className="chat__menu-icon" aria-hidden="true">
                 <i />
@@ -1176,15 +1166,13 @@ export default function App() {
             {messagesLoading ? (
               <div className="chat__empty">
                 <div className="chat__empty-icon">💬</div>
-                <div className="chat__empty-sub">Загружаем переписку…</div>
+                <div className="chat__empty-sub">{t("app.loadingThread")}</div>
               </div>
             ) : messages.length === 0 ? (
               <div className="chat__empty">
                 <div className="chat__empty-icon">💬</div>
-                <div className="chat__empty-title">Задайте вопрос своими словами</div>
-                <div className="chat__empty-sub">
-                  Загрузите документы и задавайте вопросы. Найденные фрагменты подсвечиваются в файлах.
-                </div>
+                <div className="chat__empty-title">{t("app.emptyTitle")}</div>
+                <div className="chat__empty-sub">{t("app.emptySub")}</div>
               </div>
             ) : (
               messages.map((m) => (
@@ -1208,8 +1196,8 @@ export default function App() {
                 type="button"
                 className="chat__scroll-bottom"
                 onClick={scrollMessagesToBottom}
-                aria-label="Вниз"
-                title="Вниз"
+                aria-label={t("app.scrollDown")}
+                title={t("app.scrollDown")}
               >
                 ↓
               </button>
@@ -1225,16 +1213,16 @@ export default function App() {
           )}
 
           {contextDocs.length > 0 && (
-            <div className="chat__context-chips" aria-label="Закреплённый контекст">
-              <span className="chat__context-label">Контекст:</span>
+            <div className="chat__context-chips" aria-label={t("app.pinnedContext")}>
+              <span className="chat__context-label">{t("app.contextLabel")}</span>
               {contextDocs.map((id) => (
                 <span className="context-chip" key={id}>
-                  {documents.find((d) => d.id === id)?.original_filename ?? `Документ ${id}`}
+                  {documents.find((d) => d.id === id)?.original_filename ?? t("app.docFallback", { id })}
                   <button
                     type="button"
                     className="context-chip__remove"
                     onClick={() => removeContextDoc(id)}
-                    title="Убрать из контекста"
+                    title={t("app.removeFromContext")}
                   >
                     ✕
                   </button>
@@ -1245,7 +1233,7 @@ export default function App() {
                 className="btn--link chat__context-clear"
                 onClick={() => setContextDocs([])}
               >
-                Очистить
+                {t("app.clearContext")}
               </button>
             </div>
           )}
@@ -1272,8 +1260,8 @@ export default function App() {
               type="button"
               className="chat__attach"
               onClick={() => composerFileRef.current?.click()}
-              title="Добавить документ"
-              aria-label="Добавить документ"
+              title={t("app.addDocument")}
+              aria-label={t("app.addDocument")}
             >
               +
             </button>
@@ -1292,14 +1280,14 @@ export default function App() {
                   void sendMessage(input);
                 }
               }}
-              placeholder="Задайте вопрос о документах…"
+              placeholder={t("app.inputPlaceholder")}
               disabled={loading}
             />
             <button
               type="submit"
               className="chat__send"
               disabled={loading || !input.trim()}
-              aria-label="Отправить сообщение"
+              aria-label={t("app.sendMessage")}
             >
               {loading ? (
                 "…"
@@ -1354,6 +1342,7 @@ const MessageItem = memo(function MessageItem({
   documents: DocumentOut[];
   onOpenSource: (s: SourceRef) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className={`msg msg--${m.role}`}>
       <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>
@@ -1363,14 +1352,14 @@ const MessageItem = memo(function MessageItem({
         <div className="msg__context-chips">
           {m.contextDocumentIds.map((id) => (
             <span className="context-chip context-chip--readonly" key={id}>
-              {documents.find((d) => d.id === id)?.original_filename ?? `Документ ${id}`}
+              {documents.find((d) => d.id === id)?.original_filename ?? t("app.docFallback", { id })}
             </span>
           ))}
         </div>
       )}
       {m.role === "assistant" && m.agentSteps && m.agentSteps.length > 0 && (
         <div className="agent-steps">
-          <div className="agent-steps__title">Шаги нейросети</div>
+          <div className="agent-steps__title">{t("app.agentSteps")}</div>
           {m.agentSteps.map((s) => (
             <div className="agent-steps__item" key={s.step_id}>
               <span className="agent-steps__icon">
@@ -1398,7 +1387,7 @@ const MessageItem = memo(function MessageItem({
           if (createdDocs.length === 0) return null;
           return (
             <div className="created-docs">
-              <div className="created-docs__title">Созданные документы</div>
+              <div className="created-docs__title">{t("app.createdDocs")}</div>
               {createdDocs.map((d) => (
                 <div className="created-doc" key={d.document_id}>
                   <span className="created-doc__icon">{fileIcon(d.file_type)}</span>
@@ -1410,7 +1399,7 @@ const MessageItem = memo(function MessageItem({
                     className="created-doc__btn"
                     onClick={() => void downloadDocument(d.document_id, d.filename)}
                   >
-                    Скачать
+                    {t("app.download")}
                   </button>
                 </div>
               ))}
@@ -1420,8 +1409,9 @@ const MessageItem = memo(function MessageItem({
       {m.sources && m.sources.length > 0 && (
         <div className="sources">
           <div className="sources__title">
-            Источники · {m.sources.length}{" "}
-            {plural(m.sources.length, "совпадение", "совпадения", "совпадений")} — нажмите, чтобы открыть
+            {t("app.sourcesLabel")} · {m.sources.length}{" "}
+            {t("app.sourcesPlural", { count: m.sources.length })}
+            {t("app.sourcesClick")}
           </div>
           {m.sources.slice(0, 3).map((s, i) => (
             <button key={i} className="source" onClick={() => onOpenSource(s)}>
@@ -1432,7 +1422,7 @@ const MessageItem = memo(function MessageItem({
                 </span>
                 <span className="source__score">{(s.score * 100).toFixed(0)}%</span>
               </div>
-              <div className="source__meta">Фрагмент {s.chunk_index}</div>
+              <div className="source__meta">{t("app.chunkLabel", { index: s.chunk_index })}</div>
               <div className="source__chunk">{s.text}</div>
             </button>
           ))}

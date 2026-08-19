@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import UploadDropzone from "../UploadDropzone";
+import { renderWithI18n } from "../../test/render";
 
 const TOKEN_KEY = "docsearch-token";
 const UPLOAD_WARNING_KEY = "ada-upload-warning-seen";
@@ -40,7 +41,7 @@ describe("UploadDropzone authentication", () => {
 
     const onUploaded = vi.fn();
     const onError = vi.fn();
-    const { container } = render(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
+    const { container } = renderWithI18n(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     if (!input) throw new Error("file input not rendered");
@@ -80,7 +81,7 @@ describe("UploadDropzone authentication", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const onUploaded = vi.fn();
-    const { container } = render(<UploadDropzone onUploaded={onUploaded} onError={vi.fn()} />);
+    const { container } = renderWithI18n(<UploadDropzone onUploaded={onUploaded} onError={vi.fn()} />);
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     Object.defineProperty(input, "files", { value: [new File(["hi"], "plain.txt", { type: "text/plain" })], configurable: true });
     fireEvent.change(input);
@@ -123,7 +124,7 @@ describe("UploadDropzone authentication", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const onUploaded = vi.fn();
-    const { container } = render(<UploadDropzone onUploaded={onUploaded} onError={vi.fn()} />);
+    const { container } = renderWithI18n(<UploadDropzone onUploaded={onUploaded} onError={vi.fn()} />);
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     Object.defineProperty(input, "files", {
       value: [
@@ -157,7 +158,7 @@ describe("UploadDropzone authentication", () => {
 
     const onError = vi.fn();
     const onUploaded = vi.fn();
-    const { container } = render(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
+    const { container } = renderWithI18n(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     Object.defineProperty(input, "files", {
       value: [new File(["a"], "a.txt", { type: "text/plain" })],
@@ -175,7 +176,7 @@ describe("UploadDropzone first-upload warning", () => {
   function renderUpload() {
     const onUploaded = vi.fn();
     const onError = vi.fn();
-    const utils = render(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
+    const utils = renderWithI18n(<UploadDropzone onUploaded={onUploaded} onError={onError} />);
     const input = utils.container.querySelector('input[type="file"]') as HTMLInputElement;
     if (!input) throw new Error("file input not rendered");
     const pick = (files: File[]) => {

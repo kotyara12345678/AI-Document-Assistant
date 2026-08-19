@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
+import { useI18n } from "../i18n";
 import Reveal, { useReveal } from "./Reveal";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 interface Props {
   onLogin: () => void;
@@ -94,35 +96,21 @@ function IconDoc({ size = 14, kind = "pdf" }: IconProps & { kind?: string }) {
 }
 
 interface Feature {
+  id: string;
   icon: (p: IconProps) => JSX.Element;
   title: string;
   text: string;
 }
-
-const FEATURES: Feature[] = [
-  { icon: IconDocs, title: "Работа с документами", text: "PDF, DOCX, ODT, TXT и другие поддерживаемые форматы." },
-  { icon: IconSearch, title: "AI-поиск", text: "Поиск информации внутри пользовательских документов." },
-  { icon: IconAnalyze, title: "Анализ документов", text: "Ответы на вопросы по содержимому загруженных файлов." },
-  { icon: IconEdit, title: "Редактирование", text: "Изменение текста и структуры документов с сохранением исходного файла." },
-  { icon: IconGenerate, title: "Генерация документов", text: "Создание новых документов на основе предоставленной информации." },
-  { icon: IconShield, title: "Мгновенный ответ", text: "Один вопрос — и нужные фрагменты из ваших файлов уже перед глазами." },
-];
 
 interface Step {
+  id: string;
   icon: (p: IconProps) => JSX.Element;
   title: string;
   text: string;
 }
 
-const STEPS: Step[] = [
-  { icon: IconDocs, title: "Документ", text: "Загрузите файлы в личное пространство" },
-  { icon: IconAnalyze, title: "Обработка", text: "Содержимое извлекается и разбивается на фрагменты" },
-  { icon: IconSearch, title: "Поиск", text: "Векторный индекс находит релевантные места" },
-  { icon: IconGenerate, title: "AI", text: "Модель собирает структурированный ответ" },
-  { icon: IconShield, title: "Результат", text: "Ответ, источники и выделенные фрагменты" },
-];
-
 function HeroVisual() {
+  const { t } = useI18n();
   return (
     <div className="ada-visual" aria-hidden="true">
       <svg className="ada-visual__mesh" viewBox="0 0 520 440" fill="none">
@@ -157,29 +145,29 @@ function HeroVisual() {
             <i />
             <i />
           </span>
-          <span className="ada-visual__head-title">ADA · Поиск по документам</span>
+          <span className="ada-visual__head-title">{t("landing.visualTitle")}</span>
         </div>
 
         <div className="ada-visual__search">
           <IconMagnifier />
-          <span className="ada-visual__search-text">конфиденциальность в догово…</span>
+          <span className="ada-visual__search-text">{t("landing.visualSearch")}</span>
           <span className="ada-visual__search-caret" />
         </div>
 
         <div className="ada-visual__docs">
           <div className="ada-visual__doc">
             <span className="ada-visual__doc-icon ada-visual__doc-icon--pdf"><IconDoc kind="pdf" /></span>
-            <span className="ada-visual__doc-name">договор-аренды.pdf</span>
+            <span className="ada-visual__doc-name">{t("landing.visualDoc1")}</span>
             <span className="ada-visual__doc-score">74%</span>
           </div>
           <div className="ada-visual__doc ada-visual__doc--active">
             <span className="ada-visual__doc-icon ada-visual__doc-icon--docx"><IconDoc kind="docx" /></span>
-            <span className="ada-visual__doc-name">регламент.docx</span>
+            <span className="ada-visual__doc-name">{t("landing.visualDoc2")}</span>
             <span className="ada-visual__doc-score">96%</span>
           </div>
           <div className="ada-visual__doc">
             <span className="ada-visual__doc-icon ada-visual__doc-icon--txt"><IconDoc kind="txt" /></span>
-            <span className="ada-visual__doc-name">примечания.txt</span>
+            <span className="ada-visual__doc-name">{t("landing.visualDoc3")}</span>
             <span className="ada-visual__doc-score">41%</span>
           </div>
         </div>
@@ -187,17 +175,19 @@ function HeroVisual() {
         <div className="ada-visual__fragment">
           <div className="ada-visual__fragment-label">
             <span className="ada-visual__pulse" />
-            Фрагмент · вектор №41
+            {t("landing.visualFragmentLabel")}
           </div>
           <p className="ada-visual__fragment-text">
-            «…не передавать <mark className="ada-visual__mark">конфиденциальные данные</mark> третьим лицам без
-            письменного согласия…» <span className="ada-visual__fragment-src">регламент.docx</span>
+            {t("landing.visualFragmentPre")}{" "}
+            <mark className="ada-visual__mark">{t("landing.visualFragmentMark")}</mark>{" "}
+            {t("landing.visualFragmentPost")}{" "}
+            <span className="ada-visual__fragment-src">{t("landing.visualFragmentSrc")}</span>
           </p>
         </div>
 
         <div className="ada-visual__result">
           <span className="ada-visual__result-dot" />
-          <span className="ada-visual__result-text">Ответ построен из 3 источников</span>
+          <span className="ada-visual__result-text">{t("landing.visualResult")}</span>
           <span className="ada-visual__result-time">0.8 сек</span>
         </div>
       </div>
@@ -206,8 +196,32 @@ function HeroVisual() {
 }
 
 export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpenCookies, onOpenCookieSettings, onOpenDocs }: Props) {
+  const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const heroRef = useReveal<HTMLDivElement>();
+
+  const features = useMemo<Feature[]>(
+    () => [
+      { id: "f1", icon: IconDocs, title: t("landing.f1Title"), text: t("landing.f1Text") },
+      { id: "f2", icon: IconSearch, title: t("landing.f2Title"), text: t("landing.f2Text") },
+      { id: "f3", icon: IconAnalyze, title: t("landing.f3Title"), text: t("landing.f3Text") },
+      { id: "f4", icon: IconEdit, title: t("landing.f4Title"), text: t("landing.f4Text") },
+      { id: "f5", icon: IconGenerate, title: t("landing.f5Title"), text: t("landing.f5Text") },
+      { id: "f6", icon: IconShield, title: t("landing.f6Title"), text: t("landing.f6Text") },
+    ],
+    [t],
+  );
+
+  const steps = useMemo<Step[]>(
+    () => [
+      { id: "s1", icon: IconDocs, title: t("landing.s1Title"), text: t("landing.s1Text") },
+      { id: "s2", icon: IconAnalyze, title: t("landing.s2Title"), text: t("landing.s2Text") },
+      { id: "s3", icon: IconSearch, title: t("landing.s3Title"), text: t("landing.s3Text") },
+      { id: "s4", icon: IconGenerate, title: t("landing.s4Title"), text: t("landing.s4Text") },
+      { id: "s5", icon: IconShield, title: t("landing.s5Title"), text: t("landing.s5Text") },
+    ],
+    [t],
+  );
 
   const scrollTo = (id: string) => {
     setMenuOpen(false);
@@ -225,21 +239,22 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
           </button>
 
           <nav className={`landing__links ${menuOpen ? "landing__links--open" : ""}`}>
-            <button type="button" onClick={() => scrollTo("features")}>Возможности</button>
-            <button type="button" onClick={() => scrollTo("how")}>Как работает</button>
-            <button type="button" onClick={onOpenDocs}>Документация</button>
+            <button type="button" onClick={() => scrollTo("features")}>{t("landing.navFeatures")}</button>
+            <button type="button" onClick={() => scrollTo("how")}>{t("landing.navHow")}</button>
+            <button type="button" onClick={onOpenDocs}>{t("landing.navDocs")}</button>
           </nav>
 
           <div className="landing__auth">
-            <button type="button" className="btn btn--ghost" onClick={onLogin}>Войти</button>
-            <button type="button" className="btn btn--primary" onClick={onRegister}>Регистрация</button>
+            <LanguageSwitcher />
+            <button type="button" className="btn btn--ghost" onClick={onLogin}>{t("landing.login")}</button>
+            <button type="button" className="btn btn--primary" onClick={onRegister}>{t("landing.register")}</button>
           </div>
 
           <button
             type="button"
             className={`landing__burger ${menuOpen ? "landing__burger--open" : ""}`}
             onClick={() => setMenuOpen((v) => !v)}
-            aria-label="Меню"
+            aria-label={t("landing.menu")}
             aria-expanded={menuOpen}
           >
             <i />
@@ -255,23 +270,23 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
             <div className="landing__hero-copy">
               <div ref={heroRef.ref} className={`landing__hero-kicker ${heroRef.visible ? "reveal--visible" : ""}`}>
                 <span className="landing__hero-kicker-line" />
-                Интеллектуальная работа с документами
+                {t("landing.heroKicker")}
               </div>
               <h1 className={`landing__hero-title ${heroRef.visible ? "reveal--visible" : ""}`} style={{ transitionDelay: "80ms" }}>
                 ADA
               </h1>
               <p className={`landing__hero-sub ${heroRef.visible ? "reveal--visible" : ""}`} style={{ transitionDelay: "160ms" }}>
-                AI Document Assistant
+                {t("landing.heroSub")}
               </p>
               <p className={`landing__hero-text ${heroRef.visible ? "reveal--visible" : ""}`} style={{ transitionDelay: "240ms" }}>
-                Загружайте документы. Ищите информацию. Анализируйте содержимое. Редактируйте документы с помощью AI.
+                {t("landing.heroText")}
               </p>
               <div className={`landing__hero-actions ${heroRef.visible ? "reveal--visible" : ""}`} style={{ transitionDelay: "320ms" }}>
                 <button type="button" className="btn btn--primary btn--lg" onClick={onRegister}>
-                  Начать работу
+                  {t("landing.getStarted")}
                 </button>
                 <button type="button" className="btn btn--ghost btn--lg" onClick={() => scrollTo("features")}>
-                  Возможности
+                  {t("landing.navFeatures")}
                 </button>
               </div>
             </div>
@@ -286,16 +301,16 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
           <div className="landing__wrap">
             <Reveal>
               <div className="landing__section-head">
-                <span className="landing__section-kicker">Возможности</span>
-                <h2 className="landing__section-title">Всё, что нужно для работы с документами</h2>
-                <p className="landing__section-sub">Один рабочий интерфейс для хранения, поиска, анализа и редактирования документов.</p>
+                <span className="landing__section-kicker">{t("landing.featuresKicker")}</span>
+                <h2 className="landing__section-title">{t("landing.featuresTitle")}</h2>
+                <p className="landing__section-sub">{t("landing.featuresSub")}</p>
               </div>
             </Reveal>
             <div className="landing__features">
-              {FEATURES.map((f, i) => {
+              {features.map((f, i) => {
                 const Icon = f.icon;
                 return (
-                  <Reveal key={f.title} delay={(i % 3) * 90}>
+                  <Reveal key={f.id} delay={(i % 3) * 90}>
                     <div className="feature-card">
                       <span className="feature-card__icon"><Icon /></span>
                       <h3 className="feature-card__title">{f.title}</h3>
@@ -312,16 +327,16 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
           <div className="landing__wrap">
             <Reveal>
               <div className="landing__section-head">
-                <span className="landing__section-kicker">Как это работает</span>
-                <h2 className="landing__section-title">От файла — к результату</h2>
+                <span className="landing__section-kicker">{t("landing.howKicker")}</span>
+                <h2 className="landing__section-title">{t("landing.howTitle")}</h2>
               </div>
             </Reveal>
             <div className="landing__pipeline">
               <span className="pipeline-comet" aria-hidden="true" />
-              {STEPS.map((s, i) => {
+              {steps.map((s, i) => {
                 const Icon = s.icon;
                 return (
-                  <Reveal key={s.title} delay={i * 110}>
+                  <Reveal key={s.id} delay={i * 110}>
                     <div className="pipeline-step" style={{ "--i": i } as CSSProperties}>
                       <span className="pipeline-step__index">{String(i + 1).padStart(2, "0")}</span>
                       <span className="pipeline-step__icon"><Icon /></span>
@@ -339,11 +354,11 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
           <div className="landing__cta-grid" />
           <div className="landing__wrap landing__cta-inner">
             <Reveal>
-              <h2 className="landing__cta-title">Умный поиск в ваших документах за секунды.</h2>
-              <p className="landing__cta-sub">Загрузите первый файл — остальное сделает ADA.</p>
+              <h2 className="landing__cta-title">{t("landing.ctaTitle")}</h2>
+              <p className="landing__cta-sub">{t("landing.ctaSub")}</p>
               <div className="landing__cta-actions">
                 <button type="button" className="btn btn--primary btn--lg" onClick={onRegister}>
-                  Начать работу
+                  {t("landing.getStarted")}
                 </button>
               </div>
             </Reveal>
@@ -355,23 +370,23 @@ export default function LandingPage({ onLogin, onRegister, onOpenPrivacy, onOpen
         <div className="landing__wrap landing__footer-inner">
           <div className="landing__footer-brand">
             <span className="landing__footer-logo">ADA</span>
-            <p className="landing__footer-tagline">AI Document Assistant — хранение, поиск и анализ документов.</p>
+            <p className="landing__footer-tagline">{t("landing.footerTagline")}</p>
           </div>
           <nav className="landing__footer-col">
-            <span className="landing__footer-heading">Сервис</span>
-            <button type="button" onClick={() => scrollTo("features")}>Возможности</button>
-            <button type="button" onClick={() => scrollTo("how")}>Как работает</button>
-            <button type="button" onClick={onOpenDocs}>Документация</button>
+            <span className="landing__footer-heading">{t("landing.footerService")}</span>
+            <button type="button" onClick={() => scrollTo("features")}>{t("landing.navFeatures")}</button>
+            <button type="button" onClick={() => scrollTo("how")}>{t("landing.navHow")}</button>
+            <button type="button" onClick={onOpenDocs}>{t("landing.navDocs")}</button>
           </nav>
           <nav className="landing__footer-col">
-            <span className="landing__footer-heading">Документы</span>
-            <button type="button" onClick={onOpenPrivacy}>Политика обработки персональных данных</button>
-            <button type="button" onClick={onOpenCookies}>Cookie Policy</button>
-            <button type="button" onClick={onOpenCookieSettings}>Настроить cookie</button>
+            <span className="landing__footer-heading">{t("landing.footerDocs")}</span>
+            <button type="button" onClick={onOpenPrivacy}>{t("landing.footerPrivacy")}</button>
+            <button type="button" onClick={onOpenCookies}>{t("landing.footerCookiePolicy")}</button>
+            <button type="button" onClick={onOpenCookieSettings}>{t("landing.footerCookieSettings")}</button>
           </nav>
         </div>
         <div className="landing__wrap landing__footer-bottom">
-          <span>© 2026 ADA — AI Document Assistant</span>
+          <span>{t("landing.footerCopyright")}</span>
         </div>
       </footer>
     </div>
