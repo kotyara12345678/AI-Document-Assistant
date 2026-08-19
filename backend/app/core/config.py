@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 50
     MAX_UPLOAD_FILES: int = 5
     ALLOWED_EXTENSIONS: list[str] = ["pdf", "txt", "docx", "md", "odt"]
+    # Cap on the total UNCOMPRESSED size of container-format uploads (DOCX and
+    # ODT are both ZIP packs). A 50 MB file could pack many times that, so this
+    # stops zip bombs from ballooning memory during text extraction.
+    ZIP_UNCOMPRESSED_MAX_MB: int = 512
+    # Cap on extracted text kept per document. Pathological files (or one big
+    # text) cannot grow the content column, chunking memory or embedding time
+    # without bound; extractions beyond this are truncated.
+    MAX_EXTRACTED_CHARS: int = 5_000_000
 
     # --- CORS ---
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]

@@ -101,7 +101,7 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
       setPasswordMsg(null);
       setPasswordError(null);
       if (newPassword.length < 6) {
-        setPasswordError("Пароль должен быть не короче 6 символов");
+        setPasswordError("Пароль должен быть не короче 8 символов");
         return;
       }
       if (newPassword !== newPasswordConfirm) {
@@ -196,7 +196,7 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
             <input
               className="profile-input"
               type="password"
-              placeholder="Новый пароль (мин. 6 символов)"
+              placeholder="Новый пароль (мин. 8 символов)"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"

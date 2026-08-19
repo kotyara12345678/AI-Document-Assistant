@@ -112,11 +112,11 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
               className="auth__input"
               type={showPassword ? "text" : "password"}
               required
-              minLength={isRegister ? 6 : 1}
+              minLength={isRegister ? 8 : 1}
               autoComplete={isRegister ? "new-password" : "current-password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={isRegister ? "Минимум 6 символов" : "Введите пароль"}
+              placeholder={isRegister ? "Минимум 8 символов" : "Введите пароль"}
             />
             <div className="auth__field-actions">
               <span />
@@ -138,7 +138,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
                 className="auth__input"
                 type={showPassword ? "text" : "password"}
                 required
-                minLength={6}
+                minLength={8}
                 autoComplete="new-password"
                 value={passwordConfirm}
                 onChange={(e) => setPasswordConfirm(e.target.value)}

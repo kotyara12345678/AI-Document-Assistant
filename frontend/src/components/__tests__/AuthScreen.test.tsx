@@ -16,11 +16,11 @@ describe("AuthScreen registration consent", () => {
     fireEvent.change(screen.getByPlaceholderText("you@example.com"), {
       target: { value: "user@example.com" },
     });
-    fireEvent.change(screen.getByPlaceholderText("Минимум 6 символов"), {
-      target: { value: "secret1" },
+    fireEvent.change(screen.getByPlaceholderText("Минимум 8 символов"), {
+      target: { value: "secret123" },
     });
     fireEvent.change(screen.getByPlaceholderText("Ещё раз тот же пароль"), {
-      target: { value: "secret1" },
+      target: { value: "secret123" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Создать аккаунт" }));
@@ -52,11 +52,11 @@ describe("AuthScreen registration consent", () => {
     fireEvent.change(screen.getByPlaceholderText("you@example.com"), {
       target: { value: "user@example.com" },
     });
-    fireEvent.change(screen.getByPlaceholderText("Минимум 6 символов"), {
-      target: { value: "secret1" },
+    fireEvent.change(screen.getByPlaceholderText("Минимум 8 символов"), {
+      target: { value: "secret123" },
     });
     fireEvent.change(screen.getByPlaceholderText("Ещё раз тот же пароль"), {
-      target: { value: "secret1" },
+      target: { value: "secret123" },
     });
 
     const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;

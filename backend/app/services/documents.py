@@ -1,7 +1,9 @@
 import logging
 import re
 import uuid
+from io import BytesIO
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -57,6 +59,34 @@ def _strip_control_chars(text: str | None) -> str:
     return _CONTROL_CHAR_RE.sub("", text)
 
 
+def _cap_extracted(text: str) -> str:
+    """Bound extracted text so a pathological file cannot grow unbounded."""
+    return text[: settings.MAX_EXTRACTED_CHARS]
+
+
+def _reject_zip_bomb(content: bytes, file_type: str) -> None:
+    """Refuse container formats whose UNCOMPRESSED size explodes.
+
+    DOCX and ODT are ZIP packs: raw bytes are capped by MAX_UPLOAD_SIZE_MB, but
+    a tiny pack can expand far beyond that during extraction (classic zip bomb).
+    Inspect the stored entry sizes up front and reject anything that would
+    decompress past ZIP_UNCOMPRESSED_MAX_MB.
+    """
+    if file_type not in ("docx", "odt"):
+        return
+    try:
+        with ZipFile(BytesIO(content)) as archive:
+            total = sum(info.file_size for info in archive.infolist())
+    except BadZipFile:
+        return  # extraction will surface its own 422 later
+    max_bytes = settings.ZIP_UNCOMPRESSED_MAX_MB * 1024 * 1024
+    if total > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File expands beyond the allowed size limit",
+        )
+
+
 def _read_upload_bounded(file: UploadFile) -> bytes:
     """Read the upload in chunks, refusing early once it exceeds the limit.
 
@@ -100,6 +130,7 @@ def _process_upload(file: UploadFile) -> tuple[str, str, bytes, str]:
             detail="Uploaded file is empty",
         )
 
+    _reject_zip_bomb(content, file_type)
     _validate_magic_bytes(content, file_type)
 
     extracted = extraction.extract_text(content, file_type)
@@ -108,6 +139,7 @@ def _process_upload(file: UploadFile) -> tuple[str, str, bytes, str]:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No text could be extracted from the file",
         )
+    extracted = _cap_extracted(extracted)
 
     return original_filename, file_type, content, extracted
 
@@ -163,7 +195,9 @@ def persist_file(
             content_text = ""
     # Extracted text may carry NUL/control chars (e.g. from embedded Unicode
     # fonts); strip them so the TEXT column and the search index stay valid.
-    content_text = _strip_control_chars(content_text)
+    # The extraction cap also applies here, so generated/edited documents can
+    # never push more than MAX_EXTRACTED_CHARS into the content column either.
+    content_text = _cap_extracted(_strip_control_chars(content_text))
 
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)

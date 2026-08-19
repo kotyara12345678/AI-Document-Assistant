@@ -80,10 +80,10 @@ describe("ProfilePanel", () => {
     stubFetch({ "/auth/me/usage": () => ({ total_tokens: 0, tokens_today: 0, tokens_7d: 0, tokens_30d: 0, requests: 0 }) });
     renderPanel();
     fireEvent.change(screen.getByPlaceholderText("Текущий пароль"), { target: { value: "old-pass-1" } });
-    fireEvent.change(screen.getByPlaceholderText("Новый пароль (мин. 6 символов)"), { target: { value: "abc" } });
+    fireEvent.change(screen.getByPlaceholderText("Новый пароль (мин. 8 символов)"), { target: { value: "abc" } });
     fireEvent.change(screen.getByPlaceholderText("Повторите новый пароль"), { target: { value: "abc" } });
     fireEvent.click(screen.getByText("Изменить пароль"));
-    expect(await screen.findByText("Пароль должен быть не короче 6 символов")).toBeTruthy();
+    expect(await screen.findByText("Пароль должен быть не короче 8 символов")).toBeTruthy();
   });
 
   it("changes the password via the API", async () => {
@@ -95,7 +95,7 @@ describe("ProfilePanel", () => {
     const onUpdated = vi.fn();
     renderPanel({ onUserUpdated: onUpdated });
     fireEvent.change(screen.getByPlaceholderText("Текущий пароль"), { target: { value: "old-pass-1" } });
-    fireEvent.change(screen.getByPlaceholderText("Новый пароль (мин. 6 символов)"), { target: { value: "new-pass-1" } });
+    fireEvent.change(screen.getByPlaceholderText("Новый пароль (мин. 8 символов)"), { target: { value: "new-pass-1" } });
     fireEvent.change(screen.getByPlaceholderText("Повторите новый пароль"), { target: { value: "new-pass-1" } });
     fireEvent.click(screen.getByText("Изменить пароль"));
     await waitFor(() => expect(changeSpy).toHaveBeenCalledTimes(1));

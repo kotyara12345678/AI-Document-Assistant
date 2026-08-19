@@ -34,6 +34,10 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Shared security headers + HSTS (TLS transport only).
+    include /etc/nginx/security-headers.conf;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
     include /etc/nginx/mime.types;
     types {
         application/javascript mjs;
@@ -47,10 +51,14 @@ server {
     location = /index.html {
         add_header Cache-Control "no-cache, no-store, must-revalidate";
         add_header Pragma "no-cache";
+        include /etc/nginx/security-headers.conf;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     }
 
     location /assets/ {
         add_header Cache-Control "public, max-age=31536000, immutable";
+        include /etc/nginx/security-headers.conf;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     }
 
     location /api/ {

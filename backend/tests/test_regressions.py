@@ -173,8 +173,13 @@ def test_batch_upload_with_content_failure_persists_nothing(client, monkeypatch)
 # --- demo admin backdoor -------------------------------------------------------
 
 
-def test_seeded_demo_account_is_demoted_when_not_in_admin_emails(monkeypatch):
-    """Removing demo@example.com from ADMIN_EMAILS revokes its admin role."""
+def test_seeded_demo_account_is_demoted_and_deactivated_when_not_listed(monkeypatch):
+    """Removing demo@example.com from ADMIN_EMAILS revokes admin AND login.
+
+    The account ships with a publicly known password, so when it is not an
+    explicitly listed admin it must also be deactivated — otherwise anyone
+    could log into a live account with the well-known credentials.
+    """
     db = SessionLocal()
     try:
         db.add(User(email=SEEDED_DEMO_EMAIL, password_hash=security.hash_password(PWD), role="admin"))
@@ -189,12 +194,13 @@ def test_seeded_demo_account_is_demoted_when_not_in_admin_emails(monkeypatch):
     try:
         demo = db.query(User).filter(User.email == SEEDED_DEMO_EMAIL).one()
         assert demo.role == "user", "demo account must be demoted when not listed"
+        assert demo.is_active is False, "demo account must be deactivated when not listed"
     finally:
         db.close()
 
 
 def test_seeded_demo_account_stays_admin_when_listed(monkeypatch):
-    """Explicitly listing demo@example.com in ADMIN_EMAILS keeps the role."""
+    """Explicitly listing demo@example.com in ADMIN_EMAILS keeps it usable."""
     db = SessionLocal()
     try:
         db.add(User(email=SEEDED_DEMO_EMAIL, password_hash=security.hash_password(PWD), role="user"))
@@ -209,6 +215,7 @@ def test_seeded_demo_account_stays_admin_when_listed(monkeypatch):
     try:
         demo = db.query(User).filter(User.email == SEEDED_DEMO_EMAIL).one()
         assert demo.role == "admin"
+        assert demo.is_active is True, "listed demo account must stay active"
     finally:
         db.close()
 

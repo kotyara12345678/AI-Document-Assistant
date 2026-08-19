@@ -48,22 +48,47 @@ def _sync_admin_emails() -> None:
     db = SessionLocal()
     try:
         if emails:
-            updated = (
+            promoted = (
                 db.query(User)
                 .filter(User.email.in_(emails), User.role != ADMIN_ROLE)
                 .update({User.role: ADMIN_ROLE}, synchronize_session=False)
             )
-            if updated:
-                logger.info("Promoted %s user(s) to admin role", updated)
-        if SEEDED_DEMO_EMAIL not in emails:
-            demoted = (
+            if promoted:
+                logger.info("Promoted %s user(s) to admin role", promoted)
+
+        # The seeded demo account ships with a publicly known password, so it is
+        # a backdoor unless it is explicitly listed in ADMIN_EMAILS. Lifetime
+        # rule, idempotent on every startup: listing it promotes AND activates
+        # it; any other state demotes it (if admin) and disables login, so the
+        # public-password account can never authenticate by accident.
+        if SEEDED_DEMO_EMAIL in emails:
+            demo_enabled = (
+                db.query(User)
+                .filter(User.email == SEEDED_DEMO_EMAIL)
+                .update(
+                    {User.role: ADMIN_ROLE, User.is_active: True},
+                    synchronize_session=False,
+                )
+            )
+            if demo_enabled:
+                logger.warning(
+                    "Demo account %s is explicitly listed in ADMIN_EMAILS; enabled as admin",
+                    SEEDED_DEMO_EMAIL,
+                )
+        else:
+            demo_demoted = (
                 db.query(User)
                 .filter(User.email == SEEDED_DEMO_EMAIL, User.role == ADMIN_ROLE)
                 .update({User.role: "user"}, synchronize_session=False)
             )
-            if demoted:
+            demo_deactivated = (
+                db.query(User)
+                .filter(User.email == SEEDED_DEMO_EMAIL, User.is_active.is_(True))
+                .update({User.is_active: False}, synchronize_session=False)
+            )
+            if demo_demoted or demo_deactivated:
                 logger.warning(
-                    "Demo account %s is not in ADMIN_EMAILS; demoted from admin",
+                    "Demo account %s is not in ADMIN_EMAILS; demoted and deactivated",
                     SEEDED_DEMO_EMAIL,
                 )
         db.commit()

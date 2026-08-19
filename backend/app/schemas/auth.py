@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-PASSWORD_MIN_LEN = 6
+PASSWORD_MIN_LEN = 8
 PASSWORD_MAX_LEN = 128
 # bcrypt only uses the first 72 bytes of the password; anything longer would be
 # silently truncated and produce a hash that matches the wrong prefix.
