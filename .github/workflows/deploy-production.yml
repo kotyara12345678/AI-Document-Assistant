@@ -129,6 +129,7 @@ jobs:
           APP_NAME=AI Document Assistant (production)
           APP_VERSION=${{ steps.tag.outputs.image_tag }}
           DEBUG=false
+          ENVIRONMENT=production
           JWT_SECRET=${{ secrets.JWT_SECRET }}
           GIGACHAT_CLIENT_ID=${{ secrets.GIGACHAT_CLIENT_ID }}
           GIGACHAT_CLIENT_SECRET=${{ secrets.GIGACHAT_CLIENT_SECRET }}
