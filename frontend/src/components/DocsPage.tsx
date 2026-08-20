@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import Reveal from "./Reveal";
-import LanguageSwitcher from "./LanguageSwitcher";
+
 
 const BRAND = "ADA — AI Document Assistant";
 
@@ -157,8 +157,6 @@ export default function DocsPage({ onHome }: { onHome: () => void }) {
               </button>
             ))}
           </nav>
-
-          <LanguageSwitcher />
 
           <button
             type="button"

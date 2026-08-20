@@ -3,7 +3,6 @@ import type { FormEvent } from "react";
 import type { UserOut } from "../types";
 import { login, register, setToken } from "../api";
 import { useI18n } from "../i18n";
-import LanguageSwitcher from "./LanguageSwitcher";
 
 type Mode = "login" | "register";
 
@@ -72,7 +71,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack, onOpenPrivac
               {t("auth.backToSite")}
             </button>
           )}
-          <LanguageSwitcher className="auth__lang" />
+
         </div>
         <div className="auth__brand">ADA</div>
         <p className="auth__subtitle">

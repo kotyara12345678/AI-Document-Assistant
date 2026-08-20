@@ -29,7 +29,7 @@ import Library from "./components/Library";
 import { hasSeenUploadWarning, markUploadWarningSeen } from "./consent";
 import CopyableBlock, { extractCodeBlock } from "./codeBlock";
 import { useI18n } from "./i18n";
-import LanguageSwitcher from "./components/LanguageSwitcher";
+
 
 interface Message {
   id: number;
@@ -875,7 +875,6 @@ export default function App() {
         <div className="sidebar__header">
           <span className="sidebar__brand">ADA</span>
           <div className="sidebar__actions">
-            <LanguageSwitcher className="sidebar__lang" />
             <button
               type="button"
               className="sidebar__collapse-btn"

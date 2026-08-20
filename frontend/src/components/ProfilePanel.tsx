@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { changePassword, deleteMe, fetchUsageStats, updateProfileAvatar } from "../api";
 import type { UsageStats, UserOut } from "../types";
 import { useI18n } from "../i18n";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 const MAX_AVATAR_BYTES = 1_000_000;
 
@@ -250,6 +251,10 @@ export default function ProfilePanel({ user, onBack, onUserUpdated, theme, onTog
             <button className="profile-theme-btn" onClick={onToggleTheme}>
               {theme === "dark" ? t("profile.themeLight") : t("profile.themeDark")}
             </button>
+          </div>
+          <div className="profile-settings-row">
+            <span>{t("lang.title")}</span>
+            <LanguageSwitcher />
           </div>
           <button className="profile-logout-btn" onClick={onLogout}>
             <svg className="profile-logout-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

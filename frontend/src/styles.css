@@ -6398,3 +6398,39 @@ a {
   flex-shrink: 0;
 }
 
+/* ---------- Language switcher ---------- */
+
+.lang-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lang-switch__btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.lang-switch__btn:hover {
+  background: var(--bg-soft, #f0f0f1);
+  color: var(--text);
+}
+
+.lang-switch__btn--active {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.lang-switch__btn--active:hover {
+  background: var(--text);
+  color: var(--bg);
+}
+
