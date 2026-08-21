@@ -412,6 +412,19 @@ SYSTEM_INSTRUCTION = (
     "or document content and the search did not find it, do NOT answer from "
     "your training data. Say the information was not found in the user's "
     "documents and suggest they check if the document is uploaded. "
+    "SOURCE METADATA (critical): document names, IDs, filenames, and scores "
+    "are authoritative data returned by the search tools. NEVER invent, "
+    "infer, guess, normalize, translate, or fabricate: document names, "
+    "document IDs, page numbers, chunk IDs, source paths, or filenames. "
+    "When the user asks where information was found, use ONLY the metadata "
+    "from the search results in the conversation. If the user asks 'в каком "
+    "документе?' and the previous answer was based on search results, answer "
+    "with the exact filename from those results. If provenance is unavailable "
+    "for an older message, say 'Не могу точно определить источник для этого "
+    "ответа.' — never guess. "
+    "LIST DOCUMENTS: when the user asks to list, enumerate, or name their "
+    "files/documents, call the list_documents tool. It returns the real "
+    "database listing. Never fabricate document names from your memory. "
 )
 
 # Short excerpt handed back to the model per matched document.
@@ -848,6 +861,14 @@ class AgentService:
                 ),
             )
 
+            # Initialize agent tracking lists BEFORE the forced search gate
+            # (the gate appends to these lists, so they must exist first).
+            calls: list[AgentToolCall] = []
+            results: list[AgentToolResult] = []
+            agent_steps: list[AgentStep] = []
+            functions_state_id: str | None = None
+            answer = ""
+
             # --- FORCED DOCUMENT SEARCH GATE ---
             # When the user query explicitly requires document information
             # (legal articles, document quotes, fact questions about files),
@@ -905,6 +926,14 @@ class AgentService:
                     content=json.dumps(forced_search_results, ensure_ascii=False),
                 ))
 
+                # Persist forced search results into agent state so follow-up
+                # questions ("в каком документе?") can reuse the provenance
+                # without triggering a new search.
+                self._update_state_from_tool(
+                    state, "search_documents", {"query": request.question},
+                    json.dumps(forced_search_results, ensure_ascii=False),
+                )
+
                 if forced_search_results:
                     # Build a context note from the search results and append
                     # it to the user message.  Using a user-role message
@@ -948,12 +977,6 @@ class AgentService:
                         {"role": "user", "content": not_found_note}
                     )
                     allow_tools = False
-
-            calls: list[AgentToolCall] = []
-            results: list[AgentToolResult] = []
-            agent_steps: list[AgentStep] = []
-            functions_state_id: str | None = None
-            answer = ""
 
             # Token accounting: every LLM call in the loop/verdict contributes
             # to one UsageLog row persisted when the turn finishes.
