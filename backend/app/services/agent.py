@@ -71,6 +71,11 @@ from app.services.retrieval import retrieve_context
 
 logger = logging.getLogger("app.agent")
 
+# Pipeline import (lazy to avoid circular imports)
+def _should_use_pipeline(content, user_request):
+    from app.services.document_generation_pipeline import should_use_pipeline
+    return should_use_pipeline(content, user_request)
+
 SYSTEM_INSTRUCTION = (
     "CRITICAL: You are a professional document processing assistant. You "
     "process ANY content in user documents — financial data, contracts, "
@@ -317,6 +322,15 @@ SYSTEM_INSTRUCTION = (
     "send only a 'title' without 'content', the saved file will contain no "
     "content. For ordinary (non-document) answers, use plain text and never "
     "wrap them in a code block. "
+    "LARGE DOCUMENT PIPELINE: for large, detailed documents (multi-section "
+    "reports, comprehensive contracts, technical specifications, detailed "
+    "instructions on 20+ pages), set pipeline=true in create_document and "
+    "provide a brief description of what the document should contain in "
+    "'content' instead of the full text. The backend will generate the "
+    "document in stages: outline → section-by-section → assembly. Use pipeline "
+    "when: the user asks for a long/detailed/comprehensive document, when the "
+    "document would be too large for a single response, or when the user "
+    "explicitly requests a large document. "
     "CONFIRMATION QUALITY: after create_document succeeds, your one-line "
     "confirmation MUST be based on the tool result, not on your own guess: "
     "cite the REAL file name and format it returned (e.g. 'Документ "
@@ -459,7 +473,13 @@ CREATE_FUNCTION = {
         "accepts 'docx', 'odt', 'pdf', 'md' or 'txt'; match it to what the "
         "user asked for (use 'pdf' when they asked for a PDF, 'md' for "
         "Markdown, 'txt' for plain text). The created "
-        "file can be downloaded afterwards."
+        "file can be downloaded afterwards. "
+        "LARGE DOCUMENTS: set pipeline=true when the user asks for a large, "
+        "detailed, multi-section document (long report, comprehensive contract, "
+        "technical specification, detailed instruction). The backend will "
+        "generate it in stages (outline → sections → assembly). When pipeline "
+        "is true, provide a brief description of the document in 'content' "
+        "instead of the full text."
     ),
     "parameters": {
         "type": "object",
@@ -478,7 +498,9 @@ CREATE_FUNCTION = {
                     "headings, plain paragraphs, '-'/'*' bullet lists, '1.' "
                     "numbered lists, and '| col | col |' GitHub tables with a "
                     "'|---|---|' separator row. This must contain the entire "
-                    "document text — never just the title."
+                    "document text — never just the title. "
+                    "When pipeline=true, provide a brief description/requirements "
+                    "for the document instead of the full text."
                 ),
             },
             "author": {
@@ -496,6 +518,16 @@ CREATE_FUNCTION = {
             "output_format": {
                 "type": "string",
                 "description": "Target file format: 'docx', 'odt', 'pdf', 'md' or 'txt'.",
+            },
+            "pipeline": {
+                "type": "boolean",
+                "description": (
+                    "Set to true for large documents (multi-section reports, "
+                    "long contracts, technical specs). The backend generates the "
+                    "document in stages: outline → sections → assembly. When "
+                    "true, 'content' should contain a brief description, not "
+                    "the full text."
+                ),
             },
         },
         "required": ["title", "content", "output_format"],
@@ -1394,6 +1426,41 @@ class AgentService:
         # ``content`` (reliable across function-calling models). Legacy callers
         # (and tests) may still pass a structured ``document_spec`` object.
         content = arguments.get("content")
+        pipeline_requested = bool(arguments.get("pipeline"))
+
+        # --- Multi-stage pipeline for large documents ---
+        # When the LLM requests pipeline mode or when the content is too short
+        # for a large request, use the multi-stage generation pipeline.
+        if pipeline_requested or (content and _should_use_pipeline(content, str(arguments.get("title") or ""))):
+            from app.services.document_generation_pipeline import generate_large_document
+
+            title_arg = str(arguments.get("title") or "").strip() or None
+            author_arg = str(arguments.get("author") or "").strip() or None
+            subject_arg = str(arguments.get("subject") or "").strip() or None
+            keywords_arg = str(arguments.get("keywords") or "").strip() or None
+
+            try:
+                pipeline_content = generate_large_document(
+                    user_request=content or "",
+                    title=title_arg or "Документ",
+                    source_content=content if pipeline_requested else None,
+                )
+            except Exception as exc:
+                logger.exception("Document generation pipeline failed")
+                return {
+                    "success": False,
+                    "error_type": "PipelineError",
+                    "error": f"multi-stage generation failed: {exc}",
+                }
+
+            if not pipeline_content or not pipeline_content.strip():
+                return {
+                    "success": False,
+                    "error": "pipeline produced empty content",
+                }
+
+            content = pipeline_content
+
         if content is not None:
             content = str(content)
             if not content.strip():

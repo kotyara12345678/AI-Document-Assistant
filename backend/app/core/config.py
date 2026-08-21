@@ -123,6 +123,25 @@ class Settings(BaseSettings):
     AGENT_DOCUMENT_MAX_TABLE_ROWS: int = 100
     AGENT_DOCUMENT_DEFAULT_TITLE: str = "document"
 
+    # --- Multi-stage document generation pipeline ---
+    # When the LLM requests pipeline mode (pipeline=True in create_document),
+    # the backend generates a large document in stages: outline → section-by-
+    # section generation → assembly → consistency check. This bypasses the
+    # single-response token limit (GIGACHAT_MAX_TOKENS) for large documents.
+    DOCUMENT_PIPELINE_ENABLED: bool = True
+    # Max tokens for outline/section generation calls (larger than agent default).
+    DOCUMENT_PIPELINE_MAX_TOKENS: int = 4096
+    # Max sections the pipeline will generate.
+    DOCUMENT_PIPELINE_MAX_SECTIONS: int = 30
+    # Max retries per section generation call.
+    DOCUMENT_PIPELINE_SECTION_RETRIES: int = 2
+    # Timeout (seconds) for a single section generation call.
+    DOCUMENT_PIPELINE_SECTION_TIMEOUT: float = 120.0
+    # Max total retries across all sections before aborting.
+    DOCUMENT_PIPELINE_MAX_TOTAL_RETRIES: int = 10
+    # Consistency check: after assembly, ask LLM to review for contradictions.
+    DOCUMENT_PIPELINE_CONSISTENCY_CHECK: bool = True
+
     # --- Reranker (cross-encoder re-ranking of hybrid candidates) ---
     # When enabled, hybrid retrieval first fetches RERANKER_CANDIDATES chunks
     # and the reranker re-orders them before the final top_k are sent to the

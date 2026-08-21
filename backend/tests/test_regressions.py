@@ -15,6 +15,7 @@ Each test maps to a concrete defect that was fixed:
 - JWT_SECRET default was accepted even in production -> refused at startup.
 """
 
+import json
 import threading
 import types
 import uuid
@@ -33,6 +34,7 @@ from app.schemas.auth import RegisterRequest
 from app.vector import client as vector_client
 from app.vector.client import _point_id
 
+API_PREFIX = "/api"
 PWD = "test-pass-123"
 
 
