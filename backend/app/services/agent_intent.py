@@ -158,6 +158,22 @@ _FORCED_SEARCH_CONTAINS = (
     "в моих документах", "в моем файле", "в документе",
 )
 
+# --- Follow-up patterns: questions about PREVIOUS search results -----------
+# These are conversational follow-ups that reference a previous turn's search
+# results.  They must NOT trigger a new forced search — the model should
+# answer from the conversation history.
+_FOLLOWUP_PATTERNS = (
+    "в каком документе", "в каком файле", "какой документ", "какой файл",
+    "какие документы", "какие файлы", "какого документа", "какого файла",
+    "где ты нашел", "где ты нашёл", "где вы нашли", "откуда это",
+    "откуда ты взял", "откуда вы взяли", "источник", "источнике",
+    "ты это нашел", "ты это нашёл", "вы это нашли",
+    "ты взял", "вы взяли", "ты написал", "вы написали",
+    "это где", "это откуда", "про какой документ",
+    "про какой файл", "про какую статью", "про какой закон",
+    "какой закон", "какой кодекс", "какой акт",
+)
+
 
 def is_forced_document_query(question: str) -> bool:
     """True when the query MUST go through document search before answering.
@@ -166,9 +182,16 @@ def is_forced_document_query(question: str) -> bool:
     or describe content from their documents.  The backend will run
     search_documents proactively and inject results into context — the LLM
     cannot skip search and answer from its own knowledge.
+
+    Follow-up questions about previous search results (e.g. "в каком
+    документе ты это нашел?") are excluded — the model should answer from
+    conversation history, not trigger a new search.
     """
     q = _q(question)
     if not q:
+        return False
+    # Follow-up questions about previous results should NOT trigger forced search
+    if _has_any(q, _FOLLOWUP_PATTERNS):
         return False
     if _has_any(q, _FORCED_SEARCH_PREFIXES):
         return True

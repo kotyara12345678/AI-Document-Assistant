@@ -893,50 +893,61 @@ class AgentService:
                     )
                 )
 
-                # Inject search results into context so the LLM sees them
-                # as pre-existing evidence — it cannot pretend search didn't
-                # happen.
+                # Record the forced search as a tool call/result so it
+                # appears in the agent trace.
+                calls.append(AgentToolCall(
+                    name="search_documents",
+                    arguments={"query": request.question},
+                ))
+                results.append(AgentToolResult(
+                    tool_call_id="search_documents",
+                    name="search_documents",
+                    content=json.dumps(forced_search_results, ensure_ascii=False),
+                ))
+
                 if forced_search_results:
-                    search_context = (
-                        "DOCUMENT SEARCH RESULTS (pre-fetched by the system — "
-                        "you MUST use this evidence to answer the user's question). "
-                        "Do NOT ask the user to upload documents — they are already "
-                        "available. If the information is in these results, answer "
-                        "from them. If not, say 'В доступных документах информация "
-                        "не найдена.':\n\n"
+                    # Build a context note from the search results and append
+                    # it to the user message.  Using a user-role message
+                    # (instead of system) ensures GigaChat processes it.
+                    search_evidence = (
+                        "ПРЕДВАРИТЕЛЬНЫЙ ПОИСК В ДОКУМЕНТАХ (выполнен системой "
+                        "до передачи вашего вопроса). Результаты поиска:\n\n"
                     )
                     for i, hit in enumerate(forced_search_results, 1):
-                        search_context += (
-                            f"[Document {i}: {hit.get('filename', '?')} "
+                        search_evidence += (
+                            f"[Документ {i}: {hit.get('filename', '?')} "
                             f"(id={hit.get('document_id', '?')}, "
                             f"score={hit.get('score', '?')})]\n"
                             f"{hit.get('snippet', '')}\n\n"
-                        )
-                    messages.append(
-                        {"role": "system", "content": search_context}
                     )
-                    calls.append(AgentToolCall(
-                        name="search_documents",
-                        arguments={"query": request.question},
-                    ))
-                    results.append(AgentToolResult(
-                        tool_call_id="search_documents",
-                        name="search_documents",
-                        content=json.dumps(forced_search_results, ensure_ascii=False),
-                    ))
+                    search_evidence += (
+                        "Используйте эти результаты для ответа. Не спрашивайте "
+                        "у пользователя загрузить документ — он уже доступен. "
+                        "Если информация есть в результатах — ответьте на их "
+                        "основе. Если нет — скажите «В доступных документах "
+                        "информация не найдена.»"
+                    )
+                    # Append as a follow-up user message so the LLM processes it
+                    messages.append(
+                        {"role": "user", "content": search_evidence}
+                    )
+                    # After forced search, disable further tool calls — the LLM
+                    # should answer from the injected context, not call tools.
+                    allow_tools = False
                 else:
                     # No documents found — inject a NOT_FOUND note so the
                     # model cannot fabricate an answer from its knowledge.
                     not_found_note = (
-                        "DOCUMENT SEARCH RESULT: no relevant documents were found "
-                        "for this query. You MUST NOT invent information from your "
-                        "own knowledge. Answer honestly: 'В доступных документах "
-                        "информация не найдена.' Suggest the user check their "
-                        "document library or upload relevant files."
+                        "ПРЕДВАРИТЕЛЬНЫЙ ПОИСК В ДОКУМЕНТАХ: релевантных "
+                        "документов не найдено. Вы НЕ ДОЛЖНЫ придумывать "
+                        "информацию из своей памяти. Честно ответьте: "
+                        "«В доступных документах информация не найдена.» "
+                        "Предложите пользователю проверить библиотеку документов."
                     )
                     messages.append(
-                        {"role": "system", "content": not_found_note}
+                        {"role": "user", "content": not_found_note}
                     )
+                    allow_tools = False
 
             calls: list[AgentToolCall] = []
             results: list[AgentToolResult] = []
