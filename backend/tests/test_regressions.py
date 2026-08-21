@@ -240,3 +240,136 @@ def test_jwt_secret_default_allowed_outside_production(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "development")
     monkeypatch.setattr(settings, "JWT_SECRET", "dev-secret-change-me")
     security._enforce_jwt_secret()
+
+
+# --- article-number search: reformulation must include digit tokens ----------
+
+
+def test_reformulate_includes_digit_tokens_for_article_search():
+    """'найди статью 3 ук рф' must produce a variant containing just '3' so
+    that FTS can match 'Статья 3' in legal documents."""
+    from app.services.query_reformulation import reformulate_query
+
+    variants = reformulate_query("найди статью 3 ук рф")
+    assert "3" in variants, f"digit '3' must be a variant, got {variants}"
+
+
+def test_reformulate_includes_digit_for_multi_digit_article():
+    from app.services.query_reformulation import reformulate_query
+
+    variants = reformulate_query("найди статью 105 ук рф")
+    assert "105" in variants, f"digit '105' must be a variant, got {variants}"
+
+
+# --- anti-fabrication: list/search results must not be sanitized -----------
+
+
+def test_sanitize_preserves_list_response_without_create(client, monkeypatch):
+    """'список всех файлов' triggers a list_documents tool; the model then
+    says 'файлы готовы к просмотру'. The word 'готовы' must NOT be treated as
+    a fabricated creation claim when no create_document was called."""
+    from app.services.agent import agent_service
+    from app.schemas.agent import AgentRequest
+
+    list_msg = {
+        "role": "assistant",
+        "content": None,
+        "function_call": {"name": "list_documents", "arguments": {}},
+    }
+    list_result = json.dumps(
+        [
+            {"document_id": 1, "filename": "doc1.txt"},
+            {"document_id": 2, "filename": "doc2.txt"},
+        ]
+    )
+    model_answer = "Ваши файлы готовы к просмотру: doc1.txt, doc2.txt."
+
+    calls = []
+
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
+        calls.append(messages)
+        if not calls or len(calls) == 1:
+            return (list_msg, "s")
+        return ({"content": model_answer}, None)
+
+    monkeypatch.setattr("app.services.gemini.chat_with_functions", fake)
+
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "список всех файлов"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # The answer must be the model's response, NOT "ничего не было создано".
+    assert "ничего не было создано" not in data["answer"]
+    assert "готовы" in data["answer"] or "файлы" in data["answer"]
+
+
+def test_sanitize_preserves_search_result_response(client, monkeypatch):
+    """After a search_documents call, the model says 'документ доступен'.
+    'доступен' must NOT trigger the "nothing was created" replacement."""
+    from app.services.agent import agent_service
+    from app.schemas.agent import AgentRequest
+
+    search_msg = {
+        "role": "assistant",
+        "content": None,
+        "function_call": {"name": "search_documents", "arguments": {"query": "зарплата"}},
+    }
+    search_result = json.dumps([{"document_id": 1, "filename": "salary.txt", "score": 0.9, "text": "Зарплата 50000"}])
+    model_answer = "Документ доступен: в файле salary.txt зарплата 50000 рублей."
+
+    calls = []
+
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
+        calls.append(messages)
+        if not calls or len(calls) == 1:
+            return (search_msg, "s")
+        return ({"content": model_answer}, None)
+
+    monkeypatch.setattr("app.services.gemini.chat_with_functions", fake)
+
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "какая зарплата?"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "ничего не было создано" not in data["answer"]
+    assert "50000" in data["answer"]
+
+
+# --- trailing number safety net: search queries must not trigger create/edit -
+
+
+def test_execute_tool_rejects_create_for_search_question(client, monkeypatch, user_id):
+    """_execute_tool must reject create_document when the question starts with
+    a search verb and has no creation verb (trailing number is data, not a
+    directive)."""
+    from app.services.agent import agent_service
+    from app.schemas.agent import AgentRequest
+
+    create_msg = {
+        "role": "assistant",
+        "content": None,
+        "function_call": {
+            "name": "create_document",
+            "arguments": {
+                "document_spec": {"title": "ИНН", "blocks": []},
+                "output_format": "docx",
+            },
+        },
+    }
+    model_answer = "Документ создан."
+
+    calls = []
+
+    def fake(messages, functions=None, function_call="auto", functions_state_id=None, client=None, usage_hook=None):
+        calls.append(messages)
+        if not calls or len(calls) == 1:
+            return (create_msg, "s")
+        return ({"content": model_answer}, None)
+
+    monkeypatch.setattr("app.services.gemini.chat_with_functions", fake)
+
+    resp = client.post(f"{API_PREFIX}/agent", json={"question": "найди инн алексея 4"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # The safety net must have blocked the create_document call.
+    create_calls = [c for c in data["tool_calls"] if c["name"] == "create_document"]
+    assert create_calls == [], f"create_document must be blocked for search query, got {create_calls}"
+    assert data["created_documents"] == []

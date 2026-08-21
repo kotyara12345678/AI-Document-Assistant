@@ -125,4 +125,13 @@ def reformulate_query(query: str, max_variants: int = 4) -> list[str]:
             break
         variants.append(token)
 
+    # 3b. Always try digit-only tokens (article numbers like "3", paragraph
+    # "1", item "2") even if they lost in the length sort above. These are
+    # critical for legal-document retrieval ("статья 3 УК РФ").
+    for token in sorted(set(content)):
+        if len(variants) >= max_variants:
+            break
+        if token.isdigit() and token not in variants:
+            variants.append(token)
+
     return _dedupe([v for v in variants if v])

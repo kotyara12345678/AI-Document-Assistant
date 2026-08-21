@@ -172,6 +172,39 @@ class TestSanitizeIntentAwareness:
         assert "ваш договор создан" not in out.lower()
         assert "не было создано" in out
 
+    def test_search_results_with_ready_word_not_replaced(self):
+        """After a search_documents call, 'документ доступен' is a legitimate
+        description — NOT a fabricated creation claim."""
+        from app.schemas.agent import AgentToolResult
+        from app.services.agent import _sanitize_final_answer
+
+        results = [
+            AgentToolResult(
+                name="search_documents",
+                content=json.dumps([{"document_id": 1, "filename": "doc.txt", "score": 0.9, "text": "..."}]),
+                tool_call_id="s1",
+            )
+        ]
+        answer = "Документ доступен: в файле doc.txt зарплата 50000."
+        out = _sanitize_final_answer(answer, results, "какая зарплата?")
+        assert out == answer, f"search result response must not be replaced, got {out}"
+
+    def test_list_results_with_ready_word_not_replaced(self):
+        """After a list_documents call, 'файлы готовы' is legitimate."""
+        from app.schemas.agent import AgentToolResult
+        from app.services.agent import _sanitize_final_answer
+
+        results = [
+            AgentToolResult(
+                name="list_documents",
+                content=json.dumps([{"document_id": 1, "filename": "a.txt"}]),
+                tool_call_id="l1",
+            )
+        ]
+        answer = "Ваши файлы готовы к просмотру."
+        out = _sanitize_final_answer(answer, results, "список всех файлов")
+        assert out == answer, f"list result response must not be replaced, got {out}"
+
     def test_creation_request_keeps_honest_failure(self):
         from app.services.agent import _sanitize_final_answer
 
@@ -343,3 +376,11 @@ class TestDocumentIntentStillCallsTools:
         assert any(
             f["name"] == "edit_document" for f in calls[0]["functions"]
         )
+
+    def test_trailing_number_is_not_creation_request(self):
+        """A trailing digit in a search query is data, not a create directive."""
+        assert not is_creation_request("найди инн алексея 4")
+        assert not is_creation_request("найди зарплату сергея 3")
+        assert not is_creation_request("найди статью 105 ук рф")
+        assert resolve_intent("найди инн алексея 4") == DOCUMENT
+        assert resolve_intent("найди статью 3 ук рф") == DOCUMENT

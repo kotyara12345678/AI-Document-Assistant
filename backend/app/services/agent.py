@@ -197,6 +197,11 @@ SYSTEM_INSTRUCTION = (
     "'сгенерируй трудовой договор по данным из документа' is search -> read "
     "-> create; 'найди в договоре зарплату Сергея' is search -> read -> "
     "answer. "
+    "Trailing numbers are DATA, not instructions: a number at the end of a "
+    "search or question query ('найди инн алексея 4', 'найди зарплату "
+    "сергея 3') is part of the search data (e.g. a record number, page "
+    "reference, or variant), NOT a directive to create a document. Always "
+    "treat such queries as search_documents. "
     "Template workflow: when the user asks to create a document from a "
     "template ('по шаблону', 'по образцу', 'готовый'), find and read the "
     "template FIRST, understand its structure — title, headings, numbered "
@@ -1037,6 +1042,33 @@ class AgentService:
         explicit = list(getattr(request, "context_document_ids", None) or [])
 
         if name == "create_document":
+            # Safety net: reject create_document when the user's question is
+            # clearly a search query (starts with a search verb) and contains
+            # NO creation verbs. This prevents the LLM from misinterpreting
+            # trailing numbers as creation directives (e.g. "найди инн алексея 4").
+            question = getattr(request, "question", "") or ""
+            if not is_creation_request(question):
+                from app.services.agent_intent import _normalize
+
+                q_norm = _normalize(question)
+                _SEARCH_PREFIXES = (
+                    "найди", "найти", "найдите", "поищи", "поищите",
+                    "покажи", "покажите", "где", "какой", "какая", "какое",
+                    "какие", "что", "сколько", "когда", "кто",
+                )
+                if any(q_norm.startswith(p) for p in _SEARCH_PREFIXES):
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error_type": "DocumentSpecError",
+                            "error": (
+                                "Запрос на поиск — используйте search_documents. "
+                                "Число в конце запроса — часть данных для поиска, "
+                                "а не инструкция по созданию документа."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
             try:
                 from app.services.document_quality import is_template_request
 
@@ -1064,6 +1096,31 @@ class AgentService:
                 )
 
         if name == "edit_document":
+            # Safety net: reject edit_document when the user's question is
+            # clearly a search query with no edit intent.
+            question = getattr(request, "question", "") or ""
+            if not is_creation_request(question):
+                from app.services.agent_intent import _normalize
+
+                q_norm = _normalize(question)
+                _SEARCH_PREFIXES = (
+                    "найди", "найти", "найдите", "поищи", "поищите",
+                    "покажи", "покажите", "где", "какой", "какая", "какое",
+                    "какие", "что", "сколько", "когда", "кто",
+                )
+                if any(q_norm.startswith(p) for p in _SEARCH_PREFIXES):
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error_type": "DocumentEditError",
+                            "error": (
+                                "Запрос на поиск — используйте search_documents. "
+                                "Число в конце запроса — часть данных для поиска, "
+                                "а не инструкция по редактированию документа."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
             # Force the target onto the pinned document(s).
             if explicit:
                 resolved = _resolve_explicit_file_id(request, arguments, db, user_id)
@@ -2270,9 +2327,9 @@ def _sanitize_final_answer(
 
     INTENT-GATED: the replacement is only the file-focused "was not created /
     data is missing" phrasing when the request genuinely asked for document
-    creation. Greetings/small-talk (whose prose may contain words like "готов"
-    meaning "ready to help") are never rewritten that way, and non-creation
-    document requests get a neutral statement instead.
+    creation AND a create/edit tool was actually invoked. Greetings/small-talk
+    or search/list results (whose prose may contain words like "готов" meaning
+    "ready" or "список" meaning "list") are never rewritten that way.
     """
     if not answer or not answer.strip():
         return answer
@@ -2286,21 +2343,26 @@ def _sanitize_final_answer(
     if real_ids:
         # A real file exists this turn; keep the model's prose otherwise.
         return sanitized
+    # Check whether a create/edit tool was actually called this turn.
+    # If no create/edit was invoked, the model is describing search/list
+    # results — words like "готов", "список", "доступен" are legitimate
+    # descriptions, NOT fabricated creation claims.
+    _any_create_edit_called = any(
+        r.name in ("create_document", "edit_document") for r in results
+    )
     if _looks_like_success_claim(sanitized):
         intent = resolve_intent(question)
         if intent == DOCUMENT_INTENT and is_creation_request(question):
             # The user asked for a file that was NOT really created: replace the
             # fabricated success claim with the honest outcome.
             return _honest_creation_failure(results, question)
-        if intent == UNCERTAIN_INTENT or intent == DOCUMENT_INTENT:
-            # A non-creation request ("приведи в пример", "найди вариант",
-            # "а что дальше?"): a "не хватает данных для подготовки документа"
-            # message would be meaningless here. Say plainly that nothing was
+        if _any_create_edit_called and (intent == UNCERTAIN_INTENT or intent == DOCUMENT_INTENT):
+            # A create/edit tool was called but didn't produce a real file,
+            # and the request is not clearly conversational: say nothing was
             # created, without blaming missing document data.
             return _nothing_was_created()
-        # CONVERSATIONAL intent: the model answered normal chit-chat; a claim
-        # word like "готов" in "Привет! Готов помочь" must NOT be rewritten
-        # into a "file was not created" message.
+        # No create/edit was called (search, list, or conversational) — the
+        # model's prose is a legitimate description of results. Keep it.
         return sanitized
     return sanitized
 
