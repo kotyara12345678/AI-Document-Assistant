@@ -725,3 +725,204 @@ class TestExactLegalMatchFlag:
         assert hit.get("law_name") == "ук"
         # Snippet should be expanded (not truncated to 400 chars)
         assert len(hit["snippet"]) > 400
+
+
+# --- Chapter/article confusion regression tests ---
+
+
+class TestChapterDetection:
+    """Tests that 'глава/главу N' is correctly detected as a chapter reference,
+    NOT as an article number."""
+
+    def test_chapter_detected(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("процитируй 2 главу конституции рф")
+        assert "2" in e.chapter_numbers
+        assert e.article_numbers == ()
+
+    def test_chapter_in_nominative(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("что в главе 3 трудового кодекса")
+        assert "3" in e.chapter_numbers
+
+    def test_chapter_in_genitive(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("содержание главы 5 уголовного кодекса")
+        assert "5" in e.chapter_numbers
+
+    def test_chapter_and_article_not_confused(self):
+        """'статья 2 главы 3' — article 2 inside chapter 3."""
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("статья 2 главы 3 ук")
+        assert "2" in e.article_numbers
+        assert "3" in e.chapter_numbers
+
+    def test_bare_number_is_not_chapter(self):
+        """'процитируй 2' without the word 'главу' should NOT detect chapter."""
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("процитируй 2")
+        assert e.chapter_numbers == ()
+
+    def test_quote_request_detected(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("процитируй статью 3 ук")
+        assert e.is_quote_request is True
+
+    def test_summarize_not_quote(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("перескажи статью 3 ук")
+        assert e.is_quote_request is False
+
+
+class TestChapterReconstruction:
+    """Tests that _reconstruct_chapter_context assembles full chapter text."""
+
+    def test_chapter_context_assembled(self):
+        """When chunks belong to Chapter 2 (articles 17-64), the function
+        should return the full chapter text from 'Глава 2' to 'Глава 3'."""
+        from app.schemas.chat import SourceRef
+        from app.services.retrieval import (
+            RetrievedChunk,
+            _reconstruct_chapter_context,
+        )
+        from unittest.mock import patch, MagicMock
+
+        chunk = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="constitution.pdf", chunk_index=20, score=0.9,
+                           text="Статья 18. Права и свободы..."),
+            score=0.9,
+            text="Статья 18. Права и свободы человека и гражданина.",
+        )
+
+        mock_chunks = [
+            types.SimpleNamespace(chunk_index=15, text="ГЛАВА 1. Основы конституционного строя (ст. 1-16)"),
+            types.SimpleNamespace(chunk_index=16, text="Статья 1. ..."),
+            types.SimpleNamespace(chunk_index=17, text="Статья 16. ..."),
+            types.SimpleNamespace(chunk_index=18, text="ГЛАВА 2. Права и свободы человека и гражданина (ст. 17-64)"),
+            types.SimpleNamespace(chunk_index=19, text="Статья 17. Признание и гарантирование прав."),
+            types.SimpleNamespace(chunk_index=20, text="Статья 18. Права и свободы человека и гражданина."),
+            types.SimpleNamespace(chunk_index=21, text="Статья 19. Равенство перед законом."),
+            types.SimpleNamespace(chunk_index=22, text="Статья 20. Право на жизнь."),
+            types.SimpleNamespace(chunk_index=30, text="ГЛАВА 3. Федеральное Собрание (ст. 94-109)"),
+            types.SimpleNamespace(chunk_index=31, text="Статья 94. Федеральное Собрание..."),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = mock_chunks
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = MagicMock(return_value=False)
+
+        with patch("app.services.retrieval.SessionLocal", return_value=mock_session):
+            result = _reconstruct_chapter_context([chunk], "2", user_id=1)
+
+        assert len(result) == 1
+        text = result[0].text
+        # Should contain the chapter header
+        assert "ГЛАВА 2" in text
+        # Should contain articles 17-22 (within our window)
+        assert "Статья 17" in text
+        assert "Статья 18" in text
+        assert "Статья 19" in text
+        assert "Статья 20" in text
+        # Should NOT contain chapter 1 or chapter 3 content
+        assert "Статья 1." not in text
+        assert "Статья 94" not in text
+
+    def test_chapter_not_found_keeps_original(self):
+        """When chapter header is not found in context, keep original chunks."""
+        from app.schemas.chat import SourceRef
+        from app.services.retrieval import (
+            RetrievedChunk,
+            _reconstruct_chapter_context,
+        )
+        from unittest.mock import patch, MagicMock
+
+        chunk = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="laws.pdf", chunk_index=5, score=0.8,
+                           text="Some text without chapter headers."),
+            score=0.8,
+            text="Some text without chapter headers.",
+        )
+
+        mock_chunks = [
+            types.SimpleNamespace(chunk_index=3, text="Just some text"),
+            types.SimpleNamespace(chunk_index=4, text="More text"),
+            types.SimpleNamespace(chunk_index=5, text="Some text without chapter headers."),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = mock_chunks
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = MagicMock(return_value=False)
+
+        with patch("app.services.retrieval.SessionLocal", return_value=mock_session):
+            result = _reconstruct_chapter_context([chunk], "99", user_id=1)
+
+        # Should return original chunks since chapter wasn't found
+        assert len(result) == 1
+        assert result[0].text == "Some text without chapter headers."
+
+
+class TestChapterSnippetConstant:
+    """Tests that chapter snippet constant exists and is larger than article."""
+
+    def test_chapter_constant_exists(self):
+        from app.services.agent import CHAPTER_SNIPPET_MAX_CHARS, ARTICLE_SNIPPET_MAX_CHARS
+        assert CHAPTER_SNIPPET_MAX_CHARS > ARTICLE_SNIPPET_MAX_CHARS
+
+    def test_chapter_snippet_in_search_hit(self):
+        """When a chapter query is made, the hit should include chapter_number."""
+        from unittest.mock import patch, MagicMock
+
+        mock_chunk = MagicMock()
+        mock_chunk.source.document_id = 1
+        mock_chunk.source.filename = "constitution.pdf"
+        mock_chunk.source.chunk_index = 18
+        mock_chunk.source.score = 0.9
+        mock_chunk.source.text = "ГЛАВА 2. Права и свободы..."
+        mock_chunk.score = 0.9
+        mock_chunk.text = "ГЛАВА 2. Права и свободы..."
+
+        mock_doc = MagicMock()
+        mock_doc.id = 1
+        mock_doc.file_type = "pdf"
+        mock_doc.file_size = 1000
+        mock_doc.content_length = 5000
+        mock_doc.created_at = None
+        mock_doc.user_id = 1
+        mock_doc.content = "test"
+
+        with patch("app.services.agent.retrieve_context", return_value=[mock_chunk]), \
+             patch("app.services.agent.SessionLocal") as mock_db_cls, \
+             patch("app.services.agent.Document", MagicMock()):
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.all.return_value = [mock_doc]
+            mock_db_cls.return_value.__enter__ = MagicMock(return_value=mock_db)
+            mock_db_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            from app.services.agent import AgentService
+            svc = AgentService.__new__(AgentService)
+            hits = svc._search_documents(user_id=1, query="процитируй 2 главу конституции рф", document_ids=None)
+
+        assert len(hits) >= 1
+        hit = hits[0]
+        assert hit.get("chapter_number") == "2"
+
+
+class TestQueryReformulationChapters:
+    """Tests that query reformulation generates chapter-aware variants."""
+
+    def test_chapter_variants_generated(self):
+        from app.services.query_reformulation import _entity_variants
+        variants = _entity_variants("процитируй 2 главу конституции рф")
+        # Should contain "Глава 2" and "ГЛАВА 2" as variants
+        assert any("Глава 2" in v for v in variants)
+        assert any("ГЛАВА 2" in v for v in variants)
+
+    def test_chapter_with_article_variants(self):
+        from app.services.query_reformulation import _entity_variants
+        variants = _entity_variants("статья 2 главы 3 ук")
+        # Should contain chapter variants for "3"
+        assert any("Глава 3" in v for v in variants)
+        # Should contain article variants for "2"
+        assert any("статья 2" in v for v in variants)

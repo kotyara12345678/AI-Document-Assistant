@@ -93,12 +93,18 @@ def _entity_variants(query: str) -> list[str]:
     """Generate entity-aware search variants from the query.
 
     For article numbers: "статья 105", "ст. 105", "статьи 105", "105".
+    For chapter numbers: "Глава 2", "ГЛАВА 2" (exact text match in document).
     For INN: the raw digits.
     For dates: the raw date string.
     For contract numbers: "договор 4817", "4817", "№ 4817".
     """
     entities = extract_entities(query)
     variants: list[str] = []
+
+    # Chapter number variants — these search for the exact "Глава N" header
+    for num in entities.chapter_numbers:
+        variants.append(f"Глава {num}")
+        variants.append(f"ГЛАВА {num}")
 
     # Article number variants (with law scope when detected)
     for num in entities.article_numbers:

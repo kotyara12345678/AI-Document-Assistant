@@ -753,6 +753,141 @@ def _reconstruct_article_context(
 
 
 # ---------------------------------------------------------------------------
+# Chapter context reconstruction for chapter-level queries
+# ---------------------------------------------------------------------------
+
+# Regex to detect chapter headers in chunk text: "Глава 2.", "ГЛАВА 5"
+_CHAPTER_HEADER_RE = re.compile(
+    r"ГЛАВ[АУЫ]\s+(\d+(?:\.\d+)?)\s*[.\-—:]?\s*(.*)",
+    re.IGNORECASE,
+)
+
+# How many neighboring chunks to load for chapter reconstruction
+_CHAPTER_NEIGHBOR_WINDOW = 20
+
+
+def _reconstruct_chapter_context(
+    chunks: list[RetrievedChunk],
+    chapter_number: str,
+    user_id: int,
+) -> list[RetrievedChunk]:
+    """When a chapter-level query is made, assemble the full chapter text.
+
+    Problem: "процитируй 2 главу конституции рф" should return the entire
+    Chapter 2 (Articles 17-64), not just Article 2.  The retrieval system
+    may find individual chunks within the chapter but not the full chapter.
+
+    Solution: load a wide window of neighboring chunks, find the chapter
+    header "Глава N", and assemble all text from that header to the next
+    chapter header (or end of document).
+    """
+    if not chunks or not chapter_number:
+        return chunks
+
+    # Group chunks by document
+    doc_chunks: dict[int, list[RetrievedChunk]] = {}
+    for chunk in chunks:
+        doc_id = chunk.source.document_id
+        doc_chunks.setdefault(doc_id, []).append(chunk)
+
+    results: list[RetrievedChunk] = []
+
+    for doc_id, doc_chunk_list in doc_chunks.items():
+        # Find the chunk_index range to load — wider window for chapters
+        indices = [c.source.chunk_index for c in doc_chunk_list]
+        min_idx = max(0, min(indices) - _CHAPTER_NEIGHBOR_WINDOW)
+        max_idx = max(indices) + _CHAPTER_NEIGHBOR_WINDOW
+
+        # Load neighboring chunks from DB
+        neighbor_texts: dict[int, str] = {}
+        try:
+            from app.database.session import SessionLocal
+            from app.models.document_chunk import DocumentChunk
+
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(DocumentChunk.chunk_index, DocumentChunk.text)
+                    .filter(
+                        DocumentChunk.document_id == doc_id,
+                        DocumentChunk.chunk_index >= min_idx,
+                        DocumentChunk.chunk_index <= max_idx,
+                    )
+                    .order_by(DocumentChunk.chunk_index)
+                    .all()
+                )
+                neighbor_texts = {row.chunk_index: row.text for row in rows}
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Failed to load neighboring chunks for chapter reconstruction")
+            results.extend(doc_chunk_list)
+            continue
+
+        # Concatenate all neighbor text in order
+        sorted_indices = sorted(neighbor_texts.keys())
+        full_context = "\n".join(
+            neighbor_texts[i] for i in sorted_indices if i in neighbor_texts
+        )
+
+        # Search for the chapter header in the full context
+        chapter_header_pattern = re.compile(
+            rf"ГЛАВ[АУЫ]\s+{re.escape(chapter_number)}\s*[.\-—:]?\s*(.*)",
+            re.IGNORECASE,
+        )
+        header_match = chapter_header_pattern.search(full_context)
+
+        if not header_match:
+            # Chapter header not found — keep original chunks
+            results.extend(doc_chunk_list)
+            continue
+
+        # Find the start of this chapter
+        chapter_start = header_match.start()
+
+        # Find the start of the NEXT chapter (or end of text)
+        next_chapter_pattern = re.compile(
+            r"ГЛАВ[АУЫ]\s+(\d+(?:\.\d+)?)\s*[.\-—:]",
+            re.IGNORECASE,
+        )
+        next_match = next_chapter_pattern.search(full_context, chapter_start + 1)
+        # Skip if same chapter number (e.g. reference within text)
+        while next_match and next_match.group(1) == chapter_number:
+            next_match = next_chapter_pattern.search(full_context, next_match.start() + 1)
+
+        chapter_end = next_match.start() if next_match else len(full_context)
+
+        # Extract the full chapter text
+        chapter_text = full_context[chapter_start:chapter_end].strip()
+
+        if not chapter_text or len(chapter_text) < 50:
+            results.extend(doc_chunk_list)
+            continue
+
+        # Determine chapter title from the header line
+        header_line = chapter_text.split("\n")[0] if "\n" in chapter_text else chapter_text[:300]
+        title_match = _CHAPTER_HEADER_RE.search(header_line)
+        chapter_title = title_match.group(2).strip() if title_match and title_match.group(2).strip() else ""
+
+        # Create a reconstructed chunk with the full chapter text
+        best_chunk = max(doc_chunk_list, key=lambda c: c.score)
+        reconstructed = RetrievedChunk(
+            source=SourceRef(
+                document_id=doc_id,
+                filename=best_chunk.source.filename,
+                chunk_index=best_chunk.source.chunk_index,
+                score=best_chunk.source.score,
+                text=chapter_text[:1000],
+            ),
+            score=best_chunk.source.score,
+            text=chapter_text,
+        )
+        results.append(reconstructed)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -841,7 +976,15 @@ def retrieve_context(
     # the article header (e.g. landed in the middle of the article text),
     # expand the context by loading neighboring chunks and assembling the
     # full article text from header to next article.
-    if merged and entities.article_numbers:
+    #
+    # Chapter reconstruction takes PRIORITY over article reconstruction:
+    # if the user asks for "главу 2", we assemble the entire chapter, not
+    # just one article within it.
+    if merged and entities.chapter_numbers:
+        merged = _reconstruct_chapter_context(
+            merged, entities.chapter_numbers[0], user_id,
+        )
+    elif merged and entities.article_numbers:
         merged = _reconstruct_article_context(
             merged, entities.article_numbers[0], user_id,
         )

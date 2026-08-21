@@ -137,6 +137,7 @@ class QueryEntities:
     """All entities extracted from a single query."""
 
     article_numbers: tuple[str, ...] = ()
+    chapter_numbers: tuple[str, ...] = ()  # "глава 2" → ("2",)
     inn_values: tuple[str, ...] = ()
     dates: tuple[str, ...] = ()
     contract_numbers: tuple[str, ...] = ()
@@ -146,6 +147,7 @@ class QueryEntities:
     exact_numbers: tuple[str, ...] = ()
     exact_phrases: tuple[str, ...] = ()
     law_name: str | None = None  # canonical law abbreviation (e.g. "ук", "гк")
+    is_quote_request: bool = False  # "процитируй" detected
 
     @property
     def has_exact(self) -> bool:
@@ -193,6 +195,21 @@ _ARTICLE_RE = re.compile(
     + r")\s+"
     r"(\d+(?:\.\d+)?)"
     r"(?:\s+(?:ук|гк|кзп|коап|апк|уип|тк|:UIControl|ЖК|ЗК|НК|СК|ФЗ))?",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Chapter patterns: "глава 2", "главу 5", "главы 3", "главе 7"
+# ---------------------------------------------------------------------------
+
+_CHAPTER_RE = re.compile(
+    r"(?:^|(?<=\s))глав[ауыеё]\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+# Quote request detection: "процитируй", "цитируй", "цитата"
+_QUOTE_RE = re.compile(
+    r"процитируй|цитируй|цитату|цитат[аеуыи]|процитировать",
     re.IGNORECASE,
 )
 
@@ -266,6 +283,14 @@ def extract_entities(query: str) -> QueryEntities:
     # Article numbers
     articles = list(dict.fromkeys(m.group(1) for m in _ARTICLE_RE.finditer(query)))
 
+    # Chapter numbers — but ONLY when the query explicitly says "глава/главу".
+    # A bare number like "2" after "процитируй" is NOT a chapter reference;
+    # it must be preceded by the word "глава" in some case form.
+    chapters = list(dict.fromkeys(m.group(1) for m in _CHAPTER_RE.finditer(query)))
+
+    # Quote request detection
+    is_quote = bool(_QUOTE_RE.search(query))
+
     # INN
     inns: list[str] = []
     for m in _INN_RE.finditer(query):
@@ -315,6 +340,7 @@ def extract_entities(query: str) -> QueryEntities:
 
     return QueryEntities(
         article_numbers=tuple(articles),
+        chapter_numbers=tuple(chapters),
         inn_values=tuple(inns),
         dates=tuple(dates),
         contract_numbers=tuple(contracts),
@@ -324,6 +350,7 @@ def extract_entities(query: str) -> QueryEntities:
         exact_numbers=tuple(standalone_numbers),
         exact_phrases=tuple(phrases),
         law_name=detect_law(query),
+        is_quote_request=is_quote,
     )
 
 

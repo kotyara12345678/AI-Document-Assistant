@@ -372,7 +372,22 @@ SYSTEM_INSTRUCTION = (
     "present this article to the user — NEVER say 'не найдена' or "
     "'не содержится' when exact_legal_match is true. The article number "
     "and law have been validated by the retrieval system. Simply quote or "
-    "summarise the article text from the snippet. "
+     "summarise the article text from the snippet. "
+    "CHAPTER VS ARTICLE: when the user says 'глава/главу N', they are "
+    "asking about an entire chapter — which contains MANY articles.  Do NOT "
+    "return just one article.  If the retrieval system found the full "
+    "chapter, present its content.  If the chapter is very large (e.g. "
+    "Chapter 2 of the Constitution = 48 articles), quote the key articles "
+    "and note that the chapter contains more. "
+    "QUOTE vs SUMMARISE: when the user says 'процитируй', they want the "
+    "exact text verbatim.  When they say 'перескажи' or just 'что в ...', "
+    "a summary is acceptable.  For 'процитируй' requests, reproduce the "
+    "text as-is from the snippet, preserving original wording. "
+    "FULL DOCUMENT REQUESTS: if the user asks to 'процитируй' or "
+    "'перескажи' an entire code/document (e.g. 'процитируй гражданский "
+    "кодекс'), tell them the document was found and note that it is very "
+    "large.  Suggest they ask for a specific article, chapter, or section.  "
+    "NEVER say the document doesn't exist when retrieval confirmed it. "
     "INTENT GATE: before choosing any tool, decide whether this message is "
     "about the user's documents at all. Pure greetings ('привет', "
     "'здравствуйте', 'добрый день'), politeness ('спасибо', 'пожалуйста', "
@@ -391,6 +406,9 @@ SNIPPET_MAX_CHARS = 400
 # several thousand characters; this cap prevents context overflow while still
 # giving the LLM the complete article.
 ARTICLE_SNIPPET_MAX_CHARS = 3000
+# Chapter snippet — even larger than article snippets (a chapter contains
+# many articles); set high to avoid truncation of the reconstructed chapter.
+CHAPTER_SNIPPET_MAX_CHARS = 12000
 
 # GigaChat-native function-calling specification (legacy API: ``functions``
 # field, not the OpenAI ``tools`` array which this provider ignores).
@@ -2042,6 +2060,7 @@ class AgentService:
         from app.services.entity_extraction import extract_entities as _extract_qe
         _qe = _extract_qe(query)
         is_legal_article = bool(_qe.article_numbers and _qe.law_name)
+        is_chapter = bool(_qe.chapter_numbers)
 
         for chunk in chunks:
             doc_id = chunk.source.document_id
@@ -2049,11 +2068,15 @@ class AgentService:
                 continue
             emitted.add(doc_id)
             doc = docs_by_id.get(doc_id)
-            # For legal article queries, use the full chunk text (which may
-            # be the reconstructed full article) instead of the 400-char
-            # snippet.  This ensures the LLM sees the article header and
-            # full text, not just a truncated fragment.
-            snippet_len = ARTICLE_SNIPPET_MAX_CHARS if is_legal_article else SNIPPET_MAX_CHARS
+            # For legal article or chapter queries, use the full chunk text
+            # (which may be the reconstructed full article/chapter) instead
+            # of the 400-char snippet.
+            if is_chapter:
+                snippet_len = CHAPTER_SNIPPET_MAX_CHARS
+            elif is_legal_article:
+                snippet_len = ARTICLE_SNIPPET_MAX_CHARS
+            else:
+                snippet_len = SNIPPET_MAX_CHARS
             hit = {
                 "document_id": doc_id,
                 "filename": chunk.source.filename,
@@ -2064,6 +2087,8 @@ class AgentService:
                 hit["exact_legal_match"] = True
                 hit["article_number"] = _qe.article_numbers[0]
                 hit["law_name"] = _qe.law_name
+            if is_chapter:
+                hit["chapter_number"] = _qe.chapter_numbers[0]
             if matched_variant is not None:
                 hit["reformulated_query"] = matched_variant
             if doc is not None:
