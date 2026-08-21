@@ -463,6 +463,20 @@ class TestLegalArticleSearch:
         assert "105" in e.article_numbers
         assert e.law_name == "ук"
 
+    def test_extract_entities_number_before_prefix(self):
+        """'3 статью ук рф' — number before article prefix should be detected."""
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("найди мне 3 статью ук рф")
+        assert "3" in e.article_numbers
+        assert e.law_name == "ук"
+
+    def test_extract_entities_number_before_st(self):
+        """'3 ст ук' — number before 'ст' should be detected."""
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("найди 3 ст ук")
+        assert "3" in e.article_numbers
+        assert e.law_name == "ук"
+
     # --- generate_article_variants() with law_name ---
 
     def test_article_variants_include_law_scoped(self):

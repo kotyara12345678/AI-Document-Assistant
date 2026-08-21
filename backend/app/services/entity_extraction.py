@@ -198,6 +198,15 @@ _ARTICLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Also match "N статью" (number before prefix): "3 статью", "2 статьи"
+_ARTICLE_NUMBER_FIRST_RE = re.compile(
+    r"(?:^|(?<=\s))(\d+(?:\.\d+)?)\s+"
+    + "(?:"
+    + "|".join(_ARTICLE_PREFIXES)
+    + r")",
+    re.IGNORECASE,
+)
+
 # ---------------------------------------------------------------------------
 # Chapter patterns: "глава 2", "главу 5", "главы 3", "главе 7"
 # ---------------------------------------------------------------------------
@@ -280,8 +289,15 @@ def extract_entities(query: str) -> QueryEntities:
     if not query or not query.strip():
         return QueryEntities()
 
-    # Article numbers
-    articles = list(dict.fromkeys(m.group(1) for m in _ARTICLE_RE.finditer(query)))
+    # Article numbers — match both "статья N" and "N статью" patterns
+    articles = list(dict.fromkeys(
+        m.group(1) for m in _ARTICLE_RE.finditer(query)
+    ))
+    # Also match "N статью" (number before prefix)
+    for m in _ARTICLE_NUMBER_FIRST_RE.finditer(query):
+        num = m.group(1)
+        if num not in articles:
+            articles.append(num)
 
     # Chapter numbers — but ONLY when the query explicitly says "глава/главу".
     # A bare number like "2" after "процитируй" is NOT a chapter reference;
