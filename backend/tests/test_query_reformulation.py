@@ -48,7 +48,7 @@ def test_variants_are_deduplicated_and_ordered():
 
 def test_max_variants_honoured():
     variants = reformulate_query("найти договор аренды офиса и зарплату сотрудника")
-    assert len(variants) <= 4
+    assert len(variants) <= 6
 
 
 def test_original_query_not_in_variants():

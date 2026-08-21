@@ -2,18 +2,16 @@
 
 Used by the agent's ``search_documents`` tool as a self-correction step: when
 a query returns zero hits, instead of immediately answering "not found" the
-agent tries a few rewritten variants of the query and searches again. This
-handles the common failure mode where a user-phrased request is too verbose
-("найди мне какие документы по зарплате Сергея есть") for the retriever to
-match anything, while a stripped form ("зарплата сергей") succeeds.
+agent tries a few rewritten variants of the query and searches again.
 
-The reformulation is deliberately deterministic and cheap:
+The reformulation has two phases:
 
-* leading pleading verbs ("найди", "покажи", "расскажи") are dropped;
-* Russian/English function words (prepositions, conjunctions, particles) are
-  removed;
-* as a last resort each remaining content token becomes a single-word query
-  (single highly specific terms often match where the full phrase does not).
+1. **Entity-aware variants** (new): when the query contains structured entities
+   (article numbers, INN, dates, contract numbers), generate targeted search
+   variants that the exact-match and phrase layers can pick up.
+
+2. **Generic stripping** (legacy): strip pleading verbs, drop stopwords, try
+   single content tokens as a last resort.
 
 Reformulation is ordered from most-like-original to most-stripped, and the
 original query is never re-run (it already failed).
@@ -23,9 +21,12 @@ from __future__ import annotations
 
 import re
 
-# Leading action verbs that add no retrieval information: "найди мне документы
-# про X" -> "документы про X". Ordered longest-first so "покажи мне" wins over
-# "покажи".
+from app.services.entity_extraction import (
+    extract_entities,
+    generate_article_variants,
+)
+
+# Leading action verbs that add no retrieval information.
 _LEADING_PLEADINGS = (
     "помоги найти документы про",
     "помоги найти",
@@ -88,7 +89,47 @@ def _dedupe(variants: list[str]) -> list[str]:
     return result
 
 
-def reformulate_query(query: str, max_variants: int = 4) -> list[str]:
+def _entity_variants(query: str) -> list[str]:
+    """Generate entity-aware search variants from the query.
+
+    For article numbers: "статья 105", "ст. 105", "статьи 105", "105".
+    For INN: the raw digits.
+    For dates: the raw date string.
+    For contract numbers: "договор 4817", "4817", "№ 4817".
+    """
+    entities = extract_entities(query)
+    variants: list[str] = []
+
+    # Article number variants
+    for num in entities.article_numbers:
+        variants.extend(generate_article_variants(num))
+
+    # INN variants
+    for inn in entities.inn_values:
+        variants.append(inn)
+
+    # Contract number variants
+    for cn in entities.contract_numbers:
+        variants.append(f"договор {cn}")
+        variants.append(cn)
+        variants.append(f"№ {cn}")
+
+    # Date variants
+    for date in entities.dates:
+        variants.append(date)
+
+    # Phone variants
+    for phone in entities.phone_numbers:
+        variants.append(phone)
+
+    # Email variants
+    for email in entities.emails:
+        variants.append(email)
+
+    return variants
+
+
+def reformulate_query(query: str, max_variants: int = 6) -> list[str]:
     """Return rewritten query variants ordered from most to least specific.
 
     ``query`` itself is NOT included — callers run it first. ``max_variants``
@@ -99,7 +140,14 @@ def reformulate_query(query: str, max_variants: int = 4) -> list[str]:
     if not tokens:
         return []
 
-    # 1. Strip leading pleading verbs ("найди мне ..." -> "...").
+    variants: list[str] = []
+
+    # Phase 1: Entity-aware variants (highest priority).
+    entity_vars = _entity_variants(query)
+    variants.extend(entity_vars)
+
+    # Phase 2: Generic stripping.
+    # Strip leading pleading verbs ("найди мне ..." -> "...").
     stripped = " ".join(tokens)
     for verb in _LEADING_PLEADINGS:
         verb_tokens = _tokenize(verb)
@@ -107,31 +155,26 @@ def reformulate_query(query: str, max_variants: int = 4) -> list[str]:
             stripped = " ".join(tokens[len(verb_tokens) :])
             break
 
-    # 2. Drop function words from the stripped form, keeping content terms.
+    # Drop function words from the stripped form, keeping content terms.
     content = [t for t in _tokenize(stripped) if t not in _STOPWORDS]
     if not content:
-        # Nothing but function words remains (e.g. "покажи мне всё") — try the
-        # stripped form before giving up on single tokens.
         content = _tokenize(stripped)
 
-    variants = [stripped]
+    variants.append(stripped)
     if content != _tokenize(stripped):
         variants.append(" ".join(content))
 
-    # 3. Single content tokens as a last resort, most distinctive first
-    # (longest tokens are usually the most specific).
+    # Single content tokens as a last resort, most distinctive first.
     for token in sorted(set(content), key=lambda t: (-len(t), t)):
         if len(variants) >= max_variants:
             break
         variants.append(token)
 
-    # 3b. Always try digit-only tokens (article numbers like "3", paragraph
-    # "1", item "2") even if they lost in the length sort above. These are
-    # critical for legal-document retrieval ("статья 3 УК РФ").
+    # Always try digit-only tokens even if they lost in the length sort.
     for token in sorted(set(content)):
         if len(variants) >= max_variants:
             break
         if token.isdigit() and token not in variants:
             variants.append(token)
 
-    return _dedupe([v for v in variants if v])
+    return _dedupe([v for v in variants if v])[:max_variants]
