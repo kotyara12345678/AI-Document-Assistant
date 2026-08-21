@@ -14,6 +14,7 @@ cross-encoder and cut down to the final top_k (see reranker.py).
 """
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -611,6 +612,147 @@ def _validate_law_context(
 
 
 # ---------------------------------------------------------------------------
+# Article context reconstruction for legal article queries
+# ---------------------------------------------------------------------------
+
+# Regex to detect article headers in chunk text: "Статья 3.", "Статья 105.1"
+_ARTICLE_HEADER_RE = re.compile(
+    r"Стать[яиеую]\s+(\d+(?:\.\d+)?)\s*[.\-—:]?\s*(.*)",
+    re.IGNORECASE,
+)
+
+# How many neighboring chunks to load in each direction
+_NEIGHBOR_WINDOW = 6
+
+
+def _reconstruct_article_context(
+    chunks: list[RetrievedChunk],
+    article_number: str,
+    user_id: int,
+) -> list[RetrievedChunk]:
+    """When legal article chunks are found, expand context to include the
+    full article text from neighboring chunks.
+
+    Problem: retrieval may land in the MIDDLE of an article (e.g. chunk
+    containing "Преступность деяния..." without the header "Статья 3.
+    Принцип законности"). The LLM then sees a fragment without the article
+    header and concludes "article not found".
+
+    Solution: for each matched chunk, load neighboring chunks from the same
+    document, search for the article header, and assemble the full article
+    text spanning from the header to the next article's header.
+    """
+    if not chunks or not article_number:
+        return chunks
+
+    # Group chunks by document
+    doc_chunks: dict[int, list[RetrievedChunk]] = {}
+    for chunk in chunks:
+        doc_id = chunk.source.document_id
+        doc_chunks.setdefault(doc_id, []).append(chunk)
+
+    results: list[RetrievedChunk] = []
+
+    for doc_id, doc_chunk_list in doc_chunks.items():
+        # Find the chunk_index range to load
+        indices = [c.source.chunk_index for c in doc_chunk_list]
+        min_idx = max(0, min(indices) - _NEIGHBOR_WINDOW)
+        max_idx = max(indices) + _NEIGHBOR_WINDOW
+
+        # Load neighboring chunks from DB
+        neighbor_texts: dict[int, str] = {}
+        try:
+            from app.database.session import SessionLocal
+            from app.models.document_chunk import DocumentChunk
+
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(DocumentChunk.chunk_index, DocumentChunk.text)
+                    .filter(
+                        DocumentChunk.document_id == doc_id,
+                        DocumentChunk.chunk_index >= min_idx,
+                        DocumentChunk.chunk_index <= max_idx,
+                    )
+                    .order_by(DocumentChunk.chunk_index)
+                    .all()
+                )
+                neighbor_texts = {row.chunk_index: row.text for row in rows}
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Failed to load neighboring chunks for article reconstruction")
+            # Fall through with original chunks
+            results.extend(doc_chunk_list)
+            continue
+
+        # Concatenate all neighbor text in order to find article boundaries
+        sorted_indices = sorted(neighbor_texts.keys())
+        full_context = "\n".join(
+            neighbor_texts[i] for i in sorted_indices if i in neighbor_texts
+        )
+
+        # Search for the article header in the full context
+        article_header_pattern = re.compile(
+            rf"Стать[яиеую]\s+{re.escape(article_number)}\s*[.\-—:]?\s*(.*)",
+            re.IGNORECASE,
+        )
+        header_match = article_header_pattern.search(full_context)
+
+        if not header_match:
+            # Article header not found in neighbors — keep original chunks
+            results.extend(doc_chunk_list)
+            continue
+
+        # Find the start of this article (header position)
+        article_start = header_match.start()
+
+        # Find the start of the NEXT article (or end of text)
+        next_article_pattern = re.compile(
+            r"Стать[яиеую]\s+(\d+(?:\.\d+)?)\s*[.\-—:]",
+            re.IGNORECASE,
+        )
+        # Search after the current article header
+        next_match = next_article_pattern.search(full_context, article_start + 1)
+        # Skip if the next match is the same article (e.g. "Статья 3" appears again in text)
+        while next_match and next_match.group(1) == article_number:
+            next_match = next_article_pattern.search(full_context, next_match.start() + 1)
+
+        article_end = next_match.start() if next_match else len(full_context)
+
+        # Extract the full article text
+        article_text = full_context[article_start:article_end].strip()
+
+        if not article_text or len(article_text) < 20:
+            # Too short to be a real article — keep original
+            results.extend(doc_chunk_list)
+            continue
+
+        # Determine article title from the header line
+        header_line = article_text.split("\n")[0] if "\n" in article_text else article_text[:200]
+        title_match = _ARTICLE_HEADER_RE.search(header_line)
+        article_title = title_match.group(2).strip() if title_match and title_match.group(2).strip() else ""
+
+        # Create a reconstructed chunk with the full article text
+        # Use the best original chunk's score and metadata
+        best_chunk = max(doc_chunk_list, key=lambda c: c.score)
+        reconstructed = RetrievedChunk(
+            source=SourceRef(
+                document_id=doc_id,
+                filename=best_chunk.source.filename,
+                chunk_index=best_chunk.source.chunk_index,
+                score=best_chunk.source.score,
+                text=article_text[:1000],  # truncated for source ref
+            ),
+            score=best_chunk.source.score,
+            text=article_text,
+        )
+        results.append(reconstructed)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -692,6 +834,16 @@ def retrieve_context(
         merged = _validate_law_context(
             merged, entities.law_name, entities.article_numbers[0],
             user_id, top_k,
+        )
+
+    # --- Article context reconstruction for legal article queries ---
+    # When we found chunks belonging to the right law but possibly missing
+    # the article header (e.g. landed in the middle of the article text),
+    # expand the context by loading neighboring chunks and assembling the
+    # full article text from header to next article.
+    if merged and entities.article_numbers:
+        merged = _reconstruct_article_context(
+            merged, entities.article_numbers[0], user_id,
         )
 
     return merged[:top_k]

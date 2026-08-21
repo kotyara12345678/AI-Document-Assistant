@@ -544,3 +544,184 @@ class TestLegalArticleSearch:
         variants = reformulate_query("найди 3 статью ук рф")
         # Should include law-scoped variants like "статья 3 УК"
         assert any("УК" in v for v in variants), f"expected УК in variants: {variants}"
+
+
+# --- Article context reconstruction: neighboring chunks ---
+
+
+class TestArticleContextReconstruction:
+    """When retrieval lands mid-article, neighboring chunks should be loaded
+    to find the article header and assemble full article text."""
+
+    def test_reconstruct_finds_header_in_neighboring_chunks(self):
+        from app.services.retrieval import _reconstruct_article_context, RetrievedChunk
+        from app.schemas.chat import SourceRef
+        from unittest.mock import patch, MagicMock
+
+        chunk = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="laws.pdf", chunk_index=5, score=0.85,
+                           text="Преступность деяния..."),
+            score=0.85,
+            text="Преступность деяния определяется настоящим Кодексом.",
+        )
+
+        mock_chunks = [
+            types.SimpleNamespace(chunk_index=3, text="Статья 2. Принцип равенства"),
+            types.SimpleNamespace(chunk_index=4, text="Статья 3. Принцип законности"),
+            types.SimpleNamespace(chunk_index=5, text="Преступность деяния определяется настоящим Кодексом."),
+            types.SimpleNamespace(chunk_index=6, text="Применение уголовного закона."),
+            types.SimpleNamespace(chunk_index=7, text="Статья 4. Принцип справедливости"),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = mock_chunks
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = MagicMock(return_value=False)
+
+        with patch("app.services.retrieval.SessionLocal", return_value=mock_session):
+            result = _reconstruct_article_context([chunk], "3", user_id=1)
+
+        assert len(result) == 1
+        assert "Статья 3" in result[0].text
+        assert "Принцип законности" in result[0].text
+
+    def test_reconstruct_returns_original_when_header_not_found(self):
+        from app.services.retrieval import _reconstruct_article_context, RetrievedChunk
+        from app.schemas.chat import SourceRef
+        from unittest.mock import patch, MagicMock
+
+        chunk = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="laws.pdf", chunk_index=5, score=0.85,
+                           text="Some text."),
+            score=0.85,
+            text="Some text.",
+        )
+
+        mock_chunks = [
+            types.SimpleNamespace(chunk_index=3, text="Unrelated A"),
+            types.SimpleNamespace(chunk_index=4, text="Unrelated B"),
+            types.SimpleNamespace(chunk_index=5, text="Some text."),
+            types.SimpleNamespace(chunk_index=6, text="Unrelated C"),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = mock_chunks
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = MagicMock(return_value=False)
+
+        with patch("app.services.retrieval.SessionLocal", return_value=mock_session):
+            result = _reconstruct_article_context([chunk], "999", user_id=1)
+
+        assert len(result) == 1
+        assert result[0].text == chunk.text
+
+    def test_reconstruct_assembles_full_article(self):
+        from app.services.retrieval import _reconstruct_article_context, RetrievedChunk
+        from app.schemas.chat import SourceRef
+        from unittest.mock import patch, MagicMock
+
+        chunk = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="laws.pdf", chunk_index=12, score=0.9,
+                           text="Наказуемость деяния..."),
+            score=0.9,
+            text="Наказуемость деяния определяется...",
+        )
+
+        mock_chunks = [
+            types.SimpleNamespace(chunk_index=10, text="Статья 2. Равенство"),
+            types.SimpleNamespace(chunk_index=11, text="Статья 3. Принцип законности. Лица подлежат уголовной ответственности."),
+            types.SimpleNamespace(chunk_index=12, text="Наказуемость деяния определяется настоящим Кодексом."),
+            types.SimpleNamespace(chunk_index=13, text="Применение уголовного закона осуществляется судом."),
+            types.SimpleNamespace(chunk_index=14, text="Статья 4. Справедливость"),
+        ]
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = mock_chunks
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = MagicMock(return_value=False)
+
+        with patch("app.services.retrieval.SessionLocal", return_value=mock_session):
+            result = _reconstruct_article_context([chunk], "3", user_id=1)
+
+        assert len(result) == 1
+        text = result[0].text
+        assert "Статья 3" in text
+        assert "Наказуемость деяния" in text
+        assert "Статья 4" not in text
+
+
+# --- exact_legal_match flag and agent integration ---
+
+
+class TestExactLegalMatchFlag:
+    """Tests for the exact_legal_match flag and agent prompt rules."""
+
+    def test_article_snippet_constant_exists(self):
+        from app.services.agent import ARTICLE_SNIPPET_MAX_CHARS, SNIPPET_MAX_CHARS
+        assert ARTICLE_SNIPPET_MAX_CHARS > SNIPPET_MAX_CHARS
+
+    def test_detect_law_normalises_abbreviations(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("ук") == "ук"
+        assert detect_law("УК РФ") == "ук"
+        assert detect_law("Уголовный кодекс") == "ук"
+        assert detect_law("уголовного кодекса") == "ук"
+        assert detect_law("гк") == "гк"
+        assert detect_law("ГК РФ") == "гк"
+        assert detect_law("Гражданский кодекс") == "гк"
+        assert detect_law("тк") == "тк"
+        assert detect_law("Трудового кодекса") == "тк"
+
+    def test_full_law_name_detected(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("Уголовный кодекс Российской Федерации") == "ук"
+        assert detect_law("Гражданский кодекс Российской Федерации") == "гк"
+
+    def test_article_query_full_law_name(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("найди 3 статью уголовного кодекса")
+        assert "3" in e.article_numbers
+        assert e.law_name == "ук"
+
+    def test_search_hit_includes_exact_legal_match(self):
+        """When retrieval returns a hit for a legal article query, the hit
+        dict must include exact_legal_match=true."""
+        from unittest.mock import patch, MagicMock, PropertyMock
+
+        mock_chunk = MagicMock()
+        mock_chunk.source.document_id = 1
+        mock_chunk.source.filename = "laws.pdf"
+        mock_chunk.source.chunk_index = 5
+        mock_chunk.source.score = 0.9
+        mock_chunk.source.text = "Статья 3. Принцип законности."
+        mock_chunk.score = 0.9
+        mock_chunk.text = "Статья 3. Принцип законности. Уголовный кодекс."
+
+        mock_doc = MagicMock()
+        mock_doc.id = 1
+        mock_doc.file_type = "pdf"
+        mock_doc.file_size = 1000
+        mock_doc.content_length = 5000
+        mock_doc.created_at = None
+        mock_doc.user_id = 1
+        mock_doc.content = "test"
+
+        with patch("app.services.agent.retrieve_context", return_value=[mock_chunk]), \
+             patch("app.services.agent.SessionLocal") as mock_db_cls, \
+             patch("app.services.agent.Document", MagicMock()):
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.all.return_value = [mock_doc]
+            mock_db_cls.return_value.__enter__ = MagicMock(return_value=mock_db)
+            mock_db_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            from app.services.agent import AgentService
+            svc = AgentService.__new__(AgentService)
+            hits = svc._search_documents(user_id=1, query="3 статья ук рф", document_ids=None)
+
+        assert len(hits) >= 1
+        hit = hits[0]
+        assert hit.get("exact_legal_match") is True
+        assert hit.get("article_number") == "3"
+        assert hit.get("law_name") == "ук"
+        # Snippet should be expanded (not truncated to 400 chars)
+        assert len(hit["snippet"]) > 400

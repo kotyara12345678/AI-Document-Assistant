@@ -366,6 +366,13 @@ SYSTEM_INSTRUCTION = (
     "was not found in your documents. NEVER mix up articles from different "
     "laws. NEVER guess or use general knowledge to answer about a specific "
     "article when the document search didn't find it. "
+    "VALIDATED EXACT MATCH: when a search result contains "
+    "'exact_legal_match': true, the article HAS been found and verified in "
+    "the document. The snippet contains the full article text. You MUST "
+    "present this article to the user — NEVER say 'не найдена' or "
+    "'не содержится' when exact_legal_match is true. The article number "
+    "and law have been validated by the retrieval system. Simply quote or "
+    "summarise the article text from the snippet. "
     "INTENT GATE: before choosing any tool, decide whether this message is "
     "about the user's documents at all. Pure greetings ('привет', "
     "'здравствуйте', 'добрый день'), politeness ('спасибо', 'пожалуйста', "
@@ -380,6 +387,10 @@ SYSTEM_INSTRUCTION = (
 
 # Short excerpt handed back to the model per matched document.
 SNIPPET_MAX_CHARS = 400
+# Expanded snippet for legal article queries — the full article text can be
+# several thousand characters; this cap prevents context overflow while still
+# giving the LLM the complete article.
+ARTICLE_SNIPPET_MAX_CHARS = 3000
 
 # GigaChat-native function-calling specification (legacy API: ``functions``
 # field, not the OpenAI ``tools`` array which this provider ignores).
@@ -2027,18 +2038,32 @@ class AgentService:
                 db.close()
 
         emitted: set[int] = set()
+        # Detect if this is a legal article query for expanded snippets
+        from app.services.entity_extraction import extract_entities as _extract_qe
+        _qe = _extract_qe(query)
+        is_legal_article = bool(_qe.article_numbers and _qe.law_name)
+
         for chunk in chunks:
             doc_id = chunk.source.document_id
             if doc_id in emitted:
                 continue
             emitted.add(doc_id)
             doc = docs_by_id.get(doc_id)
+            # For legal article queries, use the full chunk text (which may
+            # be the reconstructed full article) instead of the 400-char
+            # snippet.  This ensures the LLM sees the article header and
+            # full text, not just a truncated fragment.
+            snippet_len = ARTICLE_SNIPPET_MAX_CHARS if is_legal_article else SNIPPET_MAX_CHARS
             hit = {
                 "document_id": doc_id,
                 "filename": chunk.source.filename,
                 "score": round(chunk.source.score, 4),
-                "snippet": chunk.source.text[:SNIPPET_MAX_CHARS],
+                "snippet": chunk.source.text[:snippet_len],
             }
+            if is_legal_article:
+                hit["exact_legal_match"] = True
+                hit["article_number"] = _qe.article_numbers[0]
+                hit["law_name"] = _qe.law_name
             if matched_variant is not None:
                 hit["reformulated_query"] = matched_variant
             if doc is not None:
