@@ -129,6 +129,54 @@ def _has_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(n in text for n in needles)
 
 
+# --- Forced document search signals ------------------------------------------
+# These patterns indicate the user explicitly wants to retrieve information
+# from their documents.  When ANY of these is matched, the backend MUST run
+# document search before the LLM can answer — the model is not allowed to
+# skip search and answer from its own knowledge.
+
+_FORCED_SEARCH_PREFIXES = (
+    "найди", "найти", "ищи", "поищи",
+    "процитируй", "цитируй", "цитату",
+    "перескажи", "опиши",
+    "что написано", "что сказано", "что говорится", "что указано",
+    "какая статья", "какие статьи", "в каком разделе",
+    "сколько стоит", "какая сумма", "какой размер",
+    "кто подписан", "кто указ", "кто заказчик", "кто исполнител",
+)
+
+_FORCED_SEARCH_CONTAINS = (
+    "статью", "статья", "статьи", "статье", "статьей",
+    "главу", "глава", "главы", "главе",
+    "раздел", "разделе", "разделу",
+    "документ", "файл", "договор", "контракт",
+    "моих документ", "мои файл", "мои документ",
+    "загружен", "загрузил", "загрузк",
+    "ук рф", "гк рф", "коап", "тк рф", "конституци",
+    "уголовн", "гражданск", "трудов",
+    "используй только мои", "только из моих",
+    "в моих документах", "в моем файле", "в документе",
+)
+
+
+def is_forced_document_query(question: str) -> bool:
+    """True when the query MUST go through document search before answering.
+
+    This catches queries where the user explicitly asks to retrieve, quote,
+    or describe content from their documents.  The backend will run
+    search_documents proactively and inject results into context — the LLM
+    cannot skip search and answer from its own knowledge.
+    """
+    q = _q(question)
+    if not q:
+        return False
+    if _has_any(q, _FORCED_SEARCH_PREFIXES):
+        return True
+    if _has_any(q, _FORCED_SEARCH_CONTAINS):
+        return True
+    return False
+
+
 def resolve_intent(question: str) -> str:
     """Classify a request into DOCUMENT, CONVERSATIONAL or UNCERTAIN.
 

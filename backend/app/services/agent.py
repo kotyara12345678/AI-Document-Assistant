@@ -44,6 +44,7 @@ from app.services.agent_intent import (
     DOCUMENT as DOCUMENT_INTENT,
     UNCERTAIN as UNCERTAIN_INTENT,
     is_creation_request,
+    is_forced_document_query,
     resolve_intent,
     tools_enabled,
 )
@@ -395,9 +396,22 @@ SYSTEM_INSTRUCTION = (
     "itself ('что ты умеешь?', 'расскажи, на что ты способен') and "
     "general-knowledge questions are answered directly in plain text — do "
     "NOT search, read, list, create, edit or compare anything for them. "
-    "Document tools exist ONLY for requests about the user's files, facts "
+     "Document tools exist ONLY for requests about the user's files, facts "
     "that live in those files, or file creation/edit/compare/list actions. "
     "Never call a document tool for a message that carries no such signal. "
+    "FORCED DOCUMENT SEARCH: when the system message contains 'DOCUMENT "
+    "SEARCH RESULTS (pre-fetched)', search has already been performed and "
+    "results are provided in context. You MUST answer from these results. "
+    "NEVER say 'загрузите документ' or 'загрузите файл' when the system "
+    "already provides document search results — the documents are available. "
+    "If the search found relevant content, use it directly. If the search "
+    "found nothing, say 'В доступных документах информация не найдена.' and "
+    "suggest checking other documents. NEVER fabricate information from your "
+    "own knowledge when the user asked about their documents. "
+    "NOT FOUND HANDLING: when the user asks about a specific article, law, "
+    "or document content and the search did not find it, do NOT answer from "
+    "your training data. Say the information was not found in the user's "
+    "documents and suggest they check if the document is uploaded. "
 )
 
 # Short excerpt handed back to the model per matched document.
@@ -833,6 +847,96 @@ class AgentService:
                     request, state, document_ids
                 ),
             )
+
+            # --- FORCED DOCUMENT SEARCH GATE ---
+            # When the user query explicitly requires document information
+            # (legal articles, document quotes, fact questions about files),
+            # run search_documents PROACTIVELY before the LLM loop.  The
+            # results are injected into the context so the LLM MUST use them
+            # and cannot skip search to answer from its own knowledge.
+            forced_search_results: list[dict] = []
+            is_forced = is_forced_document_query(request.question)
+            if is_forced and allow_tools:
+                try:
+                    forced_search_results = self._search_documents(
+                        user_id=user_id,
+                        query=request.question,
+                        document_ids=document_ids,
+                    )
+                except Exception:
+                    logger.exception("Forced document search failed")
+                    forced_search_results = []
+
+                # Emit agent step for UI visibility
+                step_id = uuid.uuid4().hex
+                yield {
+                    "type": "agent_step",
+                    "step_id": step_id,
+                    "status": "completed" if forced_search_results else "error",
+                    "tool": "search_documents",
+                    "message": (
+                        f"Автопоиск: найдено {len(forced_search_results)} документ(ов)"
+                        if forced_search_results
+                        else "Автопоиск: релевантных документов не найдено"
+                    ),
+                }
+                agent_steps.append(
+                    AgentStep(
+                        step_id=step_id,
+                        tool="search_documents",
+                        message=(
+                            f"Автопоиск: найдено {len(forced_search_results)} документ(ов)"
+                            if forced_search_results
+                            else "Автопоиск: релевантных документов не найдено"
+                        ),
+                        status="completed" if forced_search_results else "error",
+                    )
+                )
+
+                # Inject search results into context so the LLM sees them
+                # as pre-existing evidence — it cannot pretend search didn't
+                # happen.
+                if forced_search_results:
+                    search_context = (
+                        "DOCUMENT SEARCH RESULTS (pre-fetched by the system — "
+                        "you MUST use this evidence to answer the user's question). "
+                        "Do NOT ask the user to upload documents — they are already "
+                        "available. If the information is in these results, answer "
+                        "from them. If not, say 'В доступных документах информация "
+                        "не найдена.':\n\n"
+                    )
+                    for i, hit in enumerate(forced_search_results, 1):
+                        search_context += (
+                            f"[Document {i}: {hit.get('filename', '?')} "
+                            f"(id={hit.get('document_id', '?')}, "
+                            f"score={hit.get('score', '?')})]\n"
+                            f"{hit.get('snippet', '')}\n\n"
+                        )
+                    messages.append(
+                        {"role": "system", "content": search_context}
+                    )
+                    calls.append(AgentToolCall(
+                        name="search_documents",
+                        arguments={"query": request.question},
+                    ))
+                    results.append(AgentToolResult(
+                        tool_call_id="search_documents",
+                        name="search_documents",
+                        content=json.dumps(forced_search_results, ensure_ascii=False),
+                    ))
+                else:
+                    # No documents found — inject a NOT_FOUND note so the
+                    # model cannot fabricate an answer from its knowledge.
+                    not_found_note = (
+                        "DOCUMENT SEARCH RESULT: no relevant documents were found "
+                        "for this query. You MUST NOT invent information from your "
+                        "own knowledge. Answer honestly: 'В доступных документах "
+                        "информация не найдена.' Suggest the user check their "
+                        "document library or upload relevant files."
+                    )
+                    messages.append(
+                        {"role": "system", "content": not_found_note}
+                    )
 
             calls: list[AgentToolCall] = []
             results: list[AgentToolResult] = []

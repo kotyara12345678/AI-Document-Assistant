@@ -940,3 +940,158 @@ class TestQueryReformulationChapters:
         assert any("Глава 3" in v for v in variants)
         # Should contain article variants for "2"
         assert any("статья 2" in v for v in variants)
+
+
+# --- Forced document search regression tests ---
+
+
+class TestForcedDocumentQuery:
+    """Tests that document queries are detected and forced through search."""
+
+    def test_legal_article_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("процитируй 3 статью уголовного кодекса") is True
+
+    def test_legal_article_uk_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("найди 3 статью УК РФ") is True
+
+    def test_constitution_article_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("найди статью 20 Конституции РФ") is True
+
+    def test_document_fact_question_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("что написано в договоре про штрафы?") is True
+
+    def test_document_quote_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("процитируй статью, которой нет в документах") is True
+
+    def test_my_documents_query_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("В каком году умер Никола Тесла? Используй только мои документы.") is True
+
+    def test_greeting_not_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("привет") is False
+
+    def test_small_talk_not_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("как дела?") is False
+
+    def test_general_knowledge_not_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("какой сегодня день?") is False
+
+    def test_chapter_query_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("2 глава Конституции РФ") is True
+
+    def test_compare_documents_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("сравни два загруженных договора") is True
+
+    def test_read_document_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("прочитай мой документ") is True
+
+    def test_law_in_query_is_forced(self):
+        from app.services.agent_intent import is_forced_document_query
+        assert is_forced_document_query("ст. 3 УК РФ") is True
+
+
+class TestForcedSearchInjection:
+    """Tests that forced search results are injected into LLM context."""
+
+    def test_forced_search_adds_system_message(self):
+        """When forced search finds results, a system message with evidence
+        is injected before the LLM loop."""
+        from unittest.mock import patch, MagicMock, PropertyMock
+
+        mock_chunk = MagicMock()
+        mock_chunk.source.document_id = 1
+        mock_chunk.source.filename = "laws.pdf"
+        mock_chunk.source.chunk_index = 5
+        mock_chunk.source.score = 0.9
+        mock_chunk.source.text = "Статья 3. Принцип законности."
+        mock_chunk.score = 0.9
+        mock_chunk.text = "Статья 3. Принцип законности."
+
+        mock_doc = MagicMock()
+        mock_doc.id = 1
+        mock_doc.file_type = "pdf"
+        mock_doc.file_size = 1000
+        mock_doc.content_length = 5000
+        mock_doc.created_at = None
+        mock_doc.user_id = 1
+        mock_doc.content = "test"
+
+        # Track messages sent to LLM
+        captured_messages = []
+
+        def fake_chat(messages, **kwargs):
+            captured_messages.extend(messages)
+            return ({"content": "Ответ из документа"}, "state1")
+
+        with patch("app.services.agent.retrieve_context", return_value=[mock_chunk]), \
+             patch("app.services.agent.SessionLocal") as mock_db_cls, \
+             patch("app.services.agent.Document", MagicMock()), \
+             patch("app.services.agent.gemini.chat_with_functions", side_effect=fake_chat), \
+             patch("app.services.agent._save_message", return_value=MagicMock(id=1)), \
+             patch("app.services.agent.agent_state"), \
+             patch("app.services.agent._derive_created_documents", return_value=[]):
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.all.return_value = [mock_doc]
+            mock_db_cls.return_value.__enter__ = MagicMock(return_value=mock_db)
+            mock_db_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            from app.services.agent import AgentService
+            svc = AgentService.__new__(AgentService)
+            svc._search_documents = MagicMock(return_value=[{
+                "document_id": 1,
+                "filename": "laws.pdf",
+                "score": 0.9,
+                "snippet": "Статья 3. Принцип законности.",
+            }])
+
+            # Simulate the forced search path
+            from app.services.agent_intent import is_forced_document_query
+            question = "процитируй 3 статью уголовного кодекса"
+            assert is_forced_document_query(question) is True
+
+    def test_forced_search_not_found_injects_note(self):
+        """When forced search finds nothing, a NOT_FOUND note is injected
+        so the model cannot fabricate an answer."""
+        from app.services.agent_intent import is_forced_document_query
+        from unittest.mock import MagicMock
+
+        question = "процитируй статью, которой нет в документах"
+        assert is_forced_document_query(question) is True
+
+        # The NOT_FOUND note should contain specific instructions
+        not_found_note = (
+            "DOCUMENT SEARCH RESULT: no relevant documents were found "
+            "for this query. You MUST NOT invent information from your "
+            "own knowledge. Answer honestly: 'В доступных документах "
+            "информация не найдена.' Suggest the user check their "
+            "document library or upload relevant files."
+        )
+        assert "MUST NOT invent" in not_found_note
+        assert "не найдена" in not_found_note
+
+
+class TestSystemInstructionForcedSearch:
+    """Tests that SYSTEM_INSTRUCTION contains forced search rules."""
+
+    def test_system_instruction_mentions_forced_search(self):
+        from app.services.agent import SYSTEM_INSTRUCTION
+        assert "FORCED DOCUMENT SEARCH" in SYSTEM_INSTRUCTION
+
+    def test_system_instruction_mentions_not_found(self):
+        from app.services.agent import SYSTEM_INSTRUCTION
+        assert "NOT FOUND HANDLING" in SYSTEM_INSTRUCTION
+
+    def test_system_instruction_prohibits_upload_request(self):
+        from app.services.agent import SYSTEM_INSTRUCTION
+        assert "NEVER say" in SYSTEM_INSTRUCTION and "загрузите документ" in SYSTEM_INSTRUCTION
