@@ -401,15 +401,17 @@ SYSTEM_INSTRUCTION = (
     "Never call a document tool for a message that carries no such signal. "
     "FORCED DOCUMENT SEARCH: when the system message contains 'ПРЕДВАРИТЕЛЬНЫЙ "
     "ПОИСК В ДОКУМЕНТАХ', search has already been performed and results are "
-    "provided in context. You MUST answer from these results when they exist. "
-    "NEVER say 'загрузите документ' or 'загрузите файл' when the system "
-    "already provides document search results — the documents are available. "
-    "If the search found relevant content, use it directly. If the search "
-    "found nothing ('релевантных документов не найдено'), you MUST retry: "
-    "call search_documents with DIFFERENT, BROADER queries (synonyms, "
-    "simpler terms, just the law name, etc.) and/or call list_documents to "
-    "see all available files, then read them. NEVER give up after a single "
-    "empty search — use your tools to search again with alternative terms. "
+    "provided in context. You MUST answer from these results when they contain "
+    "the needed data. NEVER say 'загрузите документ' when search results are "
+    "provided — the documents are available. "
+    "If the 'НАЙДЕННЫЕ ДАННЫЕ' section is present — present those values "
+    "immediately as the answer. "
+    "If search results exist but DO NOT contain the specific data requested "
+    "(e.g. no ИНН in the snippets), you MUST RETRY with different queries: "
+    "call search_documents with the person's name alone, with 'Doc_' prefix, "
+    "with broader terms, and/or call list_documents + read_document. "
+    "NEVER say 'не найдена' based on the pre-fetched results alone — always "
+    "retry with your own search tools first. "
     "NEVER fabricate information from your own knowledge when the user asked "
     "about their documents. "
     "NOT FOUND HANDLING: when the user asks about a specific article, law, "
@@ -456,9 +458,11 @@ _PHONE_RE = re.compile(r'(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\
 _EMAIL_RE = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 _DATE_RE = re.compile(r'\b\d{2}\.\d{2}\.\d{4}\b')
 _PASSPORT_RE = re.compile(r'(?:паспорт|паспорта)[:\s]*(\d{2}\s?\d{2}\s?\d{6})', re.IGNORECASE)
+# Broader INN patterns: "ИНН" followed by digits with flexible separator
+_INN_BROAD_RE = re.compile(r'ИНН[\s:\-]*(\d{10,12})', re.IGNORECASE)
 
 _DATA_LABELS = {
-    "инн": ("ИНН", _INN_RE),
+    "инн": ("ИНН", _INN_BROAD_RE),
     "снилс": ("СНИЛС", _SNILS_RE),
     "телефон": ("Телефон", _PHONE_RE),
     "номер телефона": ("Телефон", _PHONE_RE),
@@ -1048,9 +1052,10 @@ class AgentService:
                     messages.append(
                         {"role": "user", "content": search_evidence}
                     )
-                    # After forced search, disable further tool calls — the LLM
-                    # should answer from the injected context, not call tools.
-                    allow_tools = False
+                    # NOTE: allow_tools stays True — the model MUST be able
+                    # to retry with different queries when the pre-fetched
+                    # results don't contain the needed data (e.g. wrong
+                    # documents returned for "найди инн алексея").
                 else:
                     # No documents found even after reformulation — give the
                     # LLM a chance to try different search strategies using
