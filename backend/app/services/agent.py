@@ -443,6 +443,70 @@ SYSTEM_INSTRUCTION = (
     "database listing. Never fabricate document names from your memory. "
 )
 
+
+# ---------------------------------------------------------------------------
+# Auto-extraction of specific data values from search-result snippets.
+# When the user asks for INN, SNILS, phone, email, date, etc., we scan
+# every snippet for matching patterns and append a HIGHLIGHT section to the
+# forced-search evidence — so the model CANNOT miss the data.
+# ---------------------------------------------------------------------------
+_INN_RE = re.compile(r'(?:ИНН[:\s]*|инн[:\s]*)(\d{10,12})')
+_SNILS_RE = re.compile(r'(?:СНИЛС[:\s]*|снилс[:\s]*)(\d{3}[-\s]?\d{3}[-\s]?\d{3}\s?\d{2})')
+_PHONE_RE = re.compile(r'(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}')
+_EMAIL_RE = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
+_DATE_RE = re.compile(r'\b\d{2}\.\d{2}\.\d{4}\b')
+_PASSPORT_RE = re.compile(r'(?:паспорт|паспорта)[:\s]*(\d{2}\s?\d{2}\s?\d{6})', re.IGNORECASE)
+
+_DATA_LABELS = {
+    "инн": ("ИНН", _INN_RE),
+    "снилс": ("СНИЛС", _SNILS_RE),
+    "телефон": ("Телефон", _PHONE_RE),
+    "номер телефона": ("Телефон", _PHONE_RE),
+    "email": ("Email", _EMAIL_RE),
+    "электронная почта": ("Email", _EMAIL_RE),
+    "дата": ("Дата", _DATE_RE),
+    "дату": ("Дата", _DATE_RE),
+    "даты": ("Дата", _DATE_RE),
+    "паспорт": ("Паспорт", _PASSPORT_RE),
+    "номер паспорта": ("Паспорт", _PASSPORT_RE),
+}
+
+
+def _extract_data_highlights(query: str, hits: list[dict]) -> str:
+    """Scan search-result snippets for data patterns the user requested.
+
+    Returns a human-readable block like:
+        >>> НАЙДЕННЫЕ ДАННЫЕ:
+        ИНН: 667898765432 (документ: Трудовой договор Екатерины (1).docx)
+    or empty string if nothing found.
+    """
+    q_lower = (query or "").lower()
+    requested: list[tuple[str, re.Pattern]] = []
+    for key, val in _DATA_LABELS.items():
+        if key in q_lower:
+            requested.append(val)
+    if not requested:
+        return ""
+
+    found_lines: list[str] = []
+    seen_values: set[str] = set()
+    for hit in hits:
+        snippet = hit.get("snippet", "")
+        filename = hit.get("filename", "?")
+        for label, pattern in requested:
+            for m in pattern.finditer(snippet):
+                value = m.group(1) if m.lastindex else m.group(0)
+                value = value.strip()
+                if value in seen_values:
+                    continue
+                seen_values.add(value)
+                found_lines.append(f"  {label}: {value}  (файл: {filename})")
+
+    if not found_lines:
+        return ""
+    return "\nНАЙДЕННЫЕ ДАННЫЕ (извлечены автоматически из сниппетов):\n" + "\n".join(found_lines) + "\n"
+
+
 # Short excerpt handed back to the model per matched document.
 SNIPPET_MAX_CHARS = 400
 # Expanded snippet for legal article queries — the full article text can be
@@ -965,12 +1029,20 @@ class AgentService:
                             f"score={hit.get('score', '?')})]\n"
                             f"{hit.get('snippet', '')}\n\n"
                     )
+                    # Auto-extract specific data values (INN, SNILS, etc.)
+                    # from snippets so the model CANNOT miss them.
+                    data_highlights = _extract_data_highlights(
+                        request.question, forced_search_results
+                    )
+                    if data_highlights:
+                        search_evidence += data_highlights + "\n"
                     search_evidence += (
                         "Используйте эти результаты для ответа. Не спрашивайте "
                         "у пользователя загрузить документ — он уже доступен. "
                         "Если информация есть в результатах — ответьте на их "
-                        "основе. Если нет — скажите «В доступных документах "
-                        "информация не найдена.»"
+                        "основе. Если НАЙДЕННЫЕ ДАННЫЕ выше — обязательно "
+                        "представьте их пользователю. Если ничего нет — "
+                        "попробуйте повторить поиск с другими ключевыми словами."
                     )
                     # Append as a follow-up user message so the LLM processes it
                     messages.append(
