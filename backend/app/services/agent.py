@@ -399,19 +399,25 @@ SYSTEM_INSTRUCTION = (
      "Document tools exist ONLY for requests about the user's files, facts "
     "that live in those files, or file creation/edit/compare/list actions. "
     "Never call a document tool for a message that carries no such signal. "
-    "FORCED DOCUMENT SEARCH: when the system message contains 'DOCUMENT "
-    "SEARCH RESULTS (pre-fetched)', search has already been performed and "
-    "results are provided in context. You MUST answer from these results. "
+    "FORCED DOCUMENT SEARCH: when the system message contains 'ПРЕДВАРИТЕЛЬНЫЙ "
+    "ПОИСК В ДОКУМЕНТАХ', search has already been performed and results are "
+    "provided in context. You MUST answer from these results when they exist. "
     "NEVER say 'загрузите документ' or 'загрузите файл' when the system "
     "already provides document search results — the documents are available. "
     "If the search found relevant content, use it directly. If the search "
-    "found nothing, say 'В доступных документах информация не найдена.' and "
-    "suggest checking other documents. NEVER fabricate information from your "
-    "own knowledge when the user asked about their documents. "
+    "found nothing ('релевантных документов не найдено'), you MUST retry: "
+    "call search_documents with DIFFERENT, BROADER queries (synonyms, "
+    "simpler terms, just the law name, etc.) and/or call list_documents to "
+    "see all available files, then read them. NEVER give up after a single "
+    "empty search — use your tools to search again with alternative terms. "
+    "NEVER fabricate information from your own knowledge when the user asked "
+    "about their documents. "
     "NOT FOUND HANDLING: when the user asks about a specific article, law, "
-    "or document content and the search did not find it, do NOT answer from "
-    "your training data. Say the information was not found in the user's "
-    "documents and suggest they check if the document is uploaded. "
+    "or document content and the search did not find it, do NOT immediately "
+    "give up. First try at least 3 different search queries with broader or "
+    "different terms. Then call list_documents and read relevant files "
+    "directly. ONLY after exhausting all search and read attempts should you "
+    "say the information was not found. NEVER answer from your training data. "
     "SOURCE METADATA (critical): document names, IDs, filenames, and scores "
     "are authoritative data returned by the search tools. NEVER invent, "
     "infer, guess, normalize, translate, or fabricate: document names, "
@@ -964,19 +970,25 @@ class AgentService:
                     # should answer from the injected context, not call tools.
                     allow_tools = False
                 else:
-                    # No documents found — inject a NOT_FOUND note so the
-                    # model cannot fabricate an answer from its knowledge.
+                    # No documents found even after reformulation — give the
+                    # LLM a chance to try different search strategies using
+                    # its own tools (e.g. broader queries, different terms).
+                    # Only disable tools if the query has NO document-related
+                    # keywords at all (pure conversational queries).
                     not_found_note = (
                         "ПРЕДВАРИТЕЛЬНЫЙ ПОИСК В ДОКУМЕНТАХ: релевантных "
-                        "документов не найдено. Вы НЕ ДОЛЖНЫ придумывать "
-                        "информацию из своей памяти. Честно ответьте: "
-                        "«В доступных документах информация не найдена.» "
-                        "Предложите пользователю проверить библиотеку документов."
+                        "документов не найдено даже после реформуляции запроса. "
+                        "Ваши инструменты поиска ДОСТУПНЫ — попробуйте найти "
+                        "информацию самостоятельно: (1) вызовите search_documents "
+                        "с другими ключевыми словами (синонимы, более широкие "
+                        "термины, просто название закона); (2) вызовите "
+                        "list_documents для просмотра ВСЕХ документов; "
+                        "(3) прочитайте релевантные документы через read_document. "
+                        "НЕ ЗДАВАЙТЕСЬ после одного пустого поиска."
                     )
                     messages.append(
                         {"role": "user", "content": not_found_note}
                     )
-                    allow_tools = False
 
             # Token accounting: every LLM call in the loop/verdict contributes
             # to one UsageLog row persisted when the turn finishes.
@@ -2148,7 +2160,12 @@ class AgentService:
         matched_variant: str | None = None
         if not chunks:
             from app.services.query_reformulation import reformulate_query
+            from app.services.entity_extraction import (
+                extract_entities as _qe_fb,
+                get_law_keywords,
+            )
 
+            # Phase 1: standard reformulation variants
             for variant in reformulate_query(query):
                 candidate = retrieve_context(
                     question=variant,
@@ -2158,11 +2175,26 @@ class AgentService:
                 )
                 if not candidate:
                     continue
-                # First variant that finds anything wins: it is the closest to
-                # the user's original wording.
                 chunks = candidate
                 matched_variant = variant
                 break
+
+            # Phase 2: aggressive law-name-only fallback — try each
+            # keyword for the detected law (e.g. "уголовный кодекс")
+            if not chunks:
+                _ent = _qe_fb(query)
+                if _ent.law_name:
+                    for kw in get_law_keywords(_ent.law_name):
+                        candidate = retrieve_context(
+                            question=kw,
+                            user_id=user_id,
+                            document_id=document_ids,
+                            top_k=settings.AGENT_TOP_K,
+                        )
+                        if candidate:
+                            chunks = candidate
+                            matched_variant = kw
+                            break
 
         hits: list[dict] = []
         seen: set[int] = set()
