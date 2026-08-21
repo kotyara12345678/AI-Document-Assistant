@@ -174,6 +174,26 @@ _FOLLOWUP_PATTERNS = (
     "какой закон", "какой кодекс", "какой акт",
 )
 
+# --- Listing/enumeration patterns: must use list_documents tool -----------
+# These queries ask for ALL documents, not a relevance-ranked subset.
+# Forced search (AGENT_TOP_K=3) would return only 3 docs — the model
+# MUST call list_documents instead.
+_LISTING_PATTERNS = (
+    "список документов", "список файлов", "все документы", "все файлы",
+    "все мои документы", "все мои файлы", "список всех",
+    "какие у меня документы", "какие у меня файлы",
+    "какие документы у меня", "какие файлы у меня",
+    "назови все документы", "назови все файлы",
+    "назови документы", "назови файлы",
+    "покажи список документов", "покажи список файлов",
+    "покажи документы", "покажи файлы",
+    "перечисли документы", "перечисли файлы",
+    "сколько у меня документов", "сколько у меня файлов",
+    "сколько документов", "сколько файлов",
+    "выдай список", "выдай все документы", "выдай все файлы",
+    "имена моих файлов", "имена документов",
+)
+
 
 def is_forced_document_query(question: str) -> bool:
     """True when the query MUST go through document search before answering.
@@ -192,6 +212,10 @@ def is_forced_document_query(question: str) -> bool:
         return False
     # Follow-up questions about previous results should NOT trigger forced search
     if _has_any(q, _FOLLOWUP_PATTERNS):
+        return False
+    # Listing/enumeration queries must use list_documents tool, NOT forced search
+    # (forced search only returns top_k=3, not all documents)
+    if _has_any(q, _LISTING_PATTERNS):
         return False
     if _has_any(q, _FORCED_SEARCH_PREFIXES):
         return True
