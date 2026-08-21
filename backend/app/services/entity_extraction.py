@@ -1,9 +1,9 @@
 """Entity extraction from search queries.
 
 Extracts structured entities (article numbers, INN, dates, contract numbers,
-phones, emails, organization names, numeric identifiers) from natural-language
-Russian/English queries so the retrieval pipeline can run targeted exact-match
-searches alongside semantic and FTS.
+phones, emails, organizations, numeric identifiers, **legal article law names**)
+from natural-language Russian/English queries so the retrieval pipeline can run
+targeted exact-match searches alongside semantic and FTS.
 
 The extraction is purely regex-based — no ML, no network calls, deterministic
 and fast.
@@ -13,6 +13,123 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+
+# ---------------------------------------------------------------------------
+# Law / code name normalisation: abbreviations and full names
+# ---------------------------------------------------------------------------
+
+# Maps every recognised abbreviation (lowercase) to a list of search keywords
+# that should appear in chunks belonging to that law.  The first element is the
+# canonical short name used in query expansion (e.g. "УК", "ГК").
+_LAW_ALIASES: dict[str, list[str]] = {
+    "ук": ["УК", "уголовн", "уголовного кодекс"],
+    "гк": ["ГК", "гражданск", "гражданского кодекс"],
+    "гпк": ["ГПК", "гражданск процессуальн", "гражданского процессуальн"],
+    "апк": ["АПК", "арбитражн процессуальн", "арбитражного процессуальн"],
+    "коап": ["КоАП", "административн правонарушен", "кодексAdministrativн"],
+    "коап_": ["КоАП", "кодекс об административных правонарушениях"],
+    "тк": ["ТК", "трудов", "трудового кодекс"],
+    "ск": ["СК", "семейн", "семейного кодекс"],
+    "нк": ["НК", "налогов", "налогового кодекс"],
+    "упк": ["УПК", "уголовн процессуальн", "уголовного процессуальн"],
+    "кас": ["КАС", "административн судопроизводств", "кодекс административн судопроизводств"],
+    "жк": ["ЖК", "жилищн", "жилищного кодекс"],
+    "зк": ["ЗК", "земельн", "земельного кодекс"],
+    "фз": ["ФЗ", "федеральн закон"],
+}
+
+# Reverse map: keyword fragment → canonical abbreviation
+_KEYWORD_TO_ABBREV: dict[str, str] = {}
+for _abbr, _keywords in _LAW_ALIASES.items():
+    for _kw in _keywords[1:]:  # skip the canonical short name
+        _KEYWORD_TO_ABBREV[_kw.lower()] = _abbr.rstrip("_")
+
+
+# Full law name patterns (Russian): "Уголовный кодекс Российской Федерации"
+# etc.  These are matched case-insensitively in the query text.
+_FULL_LAW_NAME_RE = re.compile(
+    r"(?:уголовн(?:ого|ый|ом|ую|ая|ой|ых|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)|"
+    r"(?:гражданск(?:ого|ий|ом|ую|ая|ой|их|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)|"
+    r"(?:трудов(?:ого|ой|ом|ую|ая|ой|ых|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)|"
+    r"(?:семейн(?:ого|ый|ом|ую|ая|ой|ых|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)|"
+    r"(?:налогов(?:ого|ой|ом|ую|ая|ой|ых|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)|"
+    r"(?:жилищн(?:ого|ий|ом|ую|ая|ой|ых|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)|"
+    r"(?:земельн(?:ого|ий|ом|ую|ая|ой|ых|ому|ого)\s+"
+    r"кодекс(?:\s+(?:Российск(?:ой|ая|ого|ую|ой|ие|их|ому|ой)\s+Федерации|РФ))?)",
+    re.IGNORECASE,
+)
+
+# Abbreviation + optional "РФ": "УК", "УК РФ", "ГК", "ГК РФ" etc.
+_ABBREV_RE = re.compile(
+    r"\b(ук|гк|гпк|апк|коап|тк|ск|нк|упк|кас|жк|зк)"
+    r"(?:\s+(?:рф|Российск\w*\s+Федерации))?\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_law(abbrev: str) -> str:
+    """Normalise a law abbreviation to canonical lowercase form."""
+    a = abbrev.strip().lower().rstrip("_")
+    if a in _LAW_ALIASES:
+        return a
+    return a
+
+
+def detect_law(query: str) -> str | None:
+    """Detect a law/codec name from the query text.
+
+    Returns the canonical abbreviation (e.g. "ук", "гк", "тк") or None.
+    Tries full name matching first, then abbreviation matching.
+    """
+    q = query or ""
+
+    # 1. Try full law name
+    m = _FULL_LAW_NAME_RE.search(q)
+    if m:
+        matched = m.group(0).lower()
+        for kw, abbr in _KEYWORD_TO_ABBREV.items():
+            if kw in matched:
+                return abbr
+        # Fallback: check by keyword fragments
+        if "уголовн" in matched:
+            return "ук"
+        if "гражданск" in matched:
+            return "гк"
+        if "трудов" in matched:
+            return "тк"
+        if "семейн" in matched:
+            return "ск"
+        if "налогов" in matched:
+            return "нк"
+        if "жилищн" in matched:
+            return "жк"
+        if "земельн" in matched:
+            return "зк"
+
+    # 2. Try abbreviation
+    m = _ABBREV_RE.search(q)
+    if m:
+        return _normalize_law(m.group(1))
+
+    return None
+
+
+def get_law_keywords(law: str) -> list[str]:
+    """Return search keywords for a law abbreviation.
+
+    These are substrings that should appear in chunks belonging to that law.
+    Used for exact-match pattern building and post-retrieval validation.
+    """
+    abbr = _normalize_law(law)
+    keywords = _LAW_ALIASES.get(abbr, [])
+    return list(keywords) if keywords else [law.upper()]
 
 
 @dataclass(frozen=True)
@@ -28,6 +145,7 @@ class QueryEntities:
     organizations: tuple[str, ...] = ()
     exact_numbers: tuple[str, ...] = ()
     exact_phrases: tuple[str, ...] = ()
+    law_name: str | None = None  # canonical law abbreviation (e.g. "ук", "гк")
 
     @property
     def has_exact(self) -> bool:
@@ -205,18 +323,35 @@ def extract_entities(query: str) -> QueryEntities:
         organizations=tuple(orgs),
         exact_numbers=tuple(standalone_numbers),
         exact_phrases=tuple(phrases),
+        law_name=detect_law(query),
     )
 
 
-def generate_article_variants(article_number: str) -> list[str]:
-    """Generate search variants for an article number.
+def generate_article_variants(
+    article_number: str,
+    law_name: str | None = None,
+) -> list[str]:
+    """Generate search variants for an article number, optionally scoped to a law.
 
-    "105" -> ["статья 105", "ст. 105", "статьи 105", "статье 105",
+    "105" → ["статья 105", "ст. 105", "статьи 105", "статье 105",
               "статью 105", "105"]
+
+    When law_name is provided (e.g. "ук"), additional combined variants are
+    prepended: "статья 105 УК", "ст. 105 УК" etc.  These combined patterns
+    are more specific and score higher in exact-match searches.
     """
     num = article_number.strip()
-    variants = []
+    variants: list[str] = []
+
+    # Combined article+law variants (highest specificity)
+    if law_name:
+        abbr = _normalize_law(law_name).upper()
+        for prefix in ("статья", "ст.", "статьи", "статье", "статью"):
+            variants.append(f"{prefix} {num} {abbr}")
+
+    # Article-only variants
     for prefix in ("статья", "ст.", "статьи", "статье", "статью"):
         variants.append(f"{prefix} {num}")
+
     variants.append(num)
     return variants

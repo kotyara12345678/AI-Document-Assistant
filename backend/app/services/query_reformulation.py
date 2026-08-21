@@ -100,9 +100,9 @@ def _entity_variants(query: str) -> list[str]:
     entities = extract_entities(query)
     variants: list[str] = []
 
-    # Article number variants
+    # Article number variants (with law scope when detected)
     for num in entities.article_numbers:
-        variants.extend(generate_article_variants(num))
+        variants.extend(generate_article_variants(num, law_name=entities.law_name))
 
     # INN variants
     for inn in entities.inn_values:

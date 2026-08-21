@@ -23,7 +23,12 @@ from app.core.config import settings
 from app.database.session import SessionLocal
 from app.schemas.chat import SourceRef
 from app.services import reranker
-from app.services.entity_extraction import QueryEntities, extract_entities
+from app.services.entity_extraction import (
+    QueryEntities,
+    extract_entities,
+    generate_article_variants,
+    get_law_keywords,
+)
 from app.vector import client as vector_client
 from app.vector.embeddings import embed_text
 
@@ -61,13 +66,12 @@ def _as_document_ids(
 
 def _build_exact_patterns(entities: QueryEntities) -> list[str]:
     """Build ILIKE patterns from extracted entities, most specific first."""
-    from app.services.entity_extraction import generate_article_variants
-
     patterns: list[str] = []
 
-    # Article numbers with all Russian case forms
+    # Article numbers with all Russian case forms; when a law is detected,
+    # combined "статья N <ABBREV>" variants are prepended (higher specificity).
     for num in entities.article_numbers:
-        patterns.extend(generate_article_variants(num))
+        patterns.extend(generate_article_variants(num, law_name=entities.law_name))
 
     # INN values (exact digit string)
     for inn in entities.inn_values:
@@ -142,6 +146,12 @@ def _build_phrase_queries(entities: QueryEntities) -> list[str]:
     phrases: list[str] = []
 
     for num in entities.article_numbers:
+        # Combined article+law phrases (highest specificity)
+        if entities.law_name:
+            law_upper = entities.law_name.upper()
+            phrases.append(f"статья {num} {law_upper}")
+            phrases.append(f"ст {num} {law_upper}")
+        # Article-only phrases
         phrases.append(f"статья {num}")
         phrases.append(f"ст {num}")
 
@@ -458,6 +468,149 @@ def _rerank(question: str, chunks: list[RetrievedChunk], top_k: int) -> list[Ret
 
 
 # ---------------------------------------------------------------------------
+# Law context validation for legal article queries
+# ---------------------------------------------------------------------------
+
+# Characters to look backwards in the document text when validating law context.
+# This is enough to capture the law title that typically precedes articles.
+_CONTEXT_WINDOW_CHARS = 2000
+
+
+def _validate_law_context(
+    chunks: list[RetrievedChunk],
+    law_name: str,
+    article_number: str,
+    user_id: int,
+    top_k: int,
+) -> list[RetrievedChunk]:
+    """Boost/penalise chunks based on whether the requested law context is nearby.
+
+    For legal article queries like "статья 3 УК РФ" the retrieval layers may
+    return chunks from ANY law that has a "Статья 3".  This function validates
+    that the requested law's keywords actually appear in the document text
+    surrounding each candidate chunk.
+
+    Strategy:
+    1. Collect unique document_ids from the candidates.
+    2. For each document, load its full text from PostgreSQL once.
+    3. For each candidate chunk, find its position in the document text and
+       search backwards for law-name keywords within a context window.
+    4. Boost chunks that have the right law context; heavily penalise those
+       that don't (they are likely from a different law).
+    5. Re-sort by adjusted score and return the top_k.
+
+    If no chunks pass the validation (e.g. the document doesn't contain the
+    requested law at all), the original chunks are returned unmodified so the
+    agent can still answer "not found" based on the raw search results.
+    """
+    if not chunks or not law_name:
+        return chunks
+
+    law_keywords = get_law_keywords(law_name)
+    if not law_keywords:
+        return chunks
+
+    # Normalise to lowercase for case-insensitive matching
+    law_kw_lower = [kw.lower() for kw in law_keywords]
+
+    # Collect unique document_ids
+    doc_ids = list({c.source.document_id for c in chunks})
+    if not doc_ids:
+        return chunks
+
+    # Load full document texts from DB (one query per unique doc)
+    doc_texts: dict[int, str] = {}
+    try:
+        from app.database.session import SessionLocal
+        from app.models.document import Document
+
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(Document.id, Document.content)
+                .filter(Document.id.in_(doc_ids), Document.user_id == user_id)
+                .all()
+            )
+            doc_texts = {row.id: row.content or "" for row in rows}
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to load document texts for law validation")
+        return chunks
+
+    validated: list[RetrievedChunk] = []
+    for chunk in chunks:
+        doc_text = doc_texts.get(chunk.source.document_id, "")
+        if not doc_text:
+            # Can't validate — keep the chunk
+            validated.append(chunk)
+            continue
+
+        # Find the chunk text in the document to determine its position
+        chunk_start = doc_text.find(chunk.text[:200])
+        if chunk_start < 0:
+            # Fuzzy match: try a shorter prefix
+            chunk_start = doc_text.find(chunk.text[:80])
+        if chunk_start < 0:
+            # Can't locate — keep the chunk (don't penalise)
+            validated.append(chunk)
+            continue
+
+        # Search backwards for law keywords within the context window
+        context_start = max(0, chunk_start - _CONTEXT_WINDOW_CHARS)
+        context_window = doc_text[context_start:chunk_start].lower()
+
+        has_law_context = any(kw in context_window for kw in law_kw_lower)
+
+        if has_law_context:
+            # Boost: this chunk is confirmed to belong to the requested law
+            boosted_score = min(1.0, chunk.score * 1.25)
+            validated.append(
+                RetrievedChunk(
+                    source=SourceRef(
+                        document_id=chunk.source.document_id,
+                        filename=chunk.source.filename,
+                        chunk_index=chunk.source.chunk_index,
+                        score=boosted_score,
+                        text=chunk.source.text,
+                    ),
+                    score=boosted_score,
+                    text=chunk.text,
+                )
+            )
+        else:
+            # Penalise: no law context found — likely from a different law
+            penalised_score = chunk.score * 0.3
+            if penalised_score >= 0.05:  # keep but with low score
+                validated.append(
+                    RetrievedChunk(
+                        source=SourceRef(
+                            document_id=chunk.source.document_id,
+                            filename=chunk.source.filename,
+                            chunk_index=chunk.source.chunk_index,
+                            score=penalised_score,
+                            text=chunk.source.text,
+                        ),
+                        score=penalised_score,
+                        text=chunk.text,
+                    )
+                )
+            # If penalised below threshold, drop the chunk entirely
+
+    # Re-sort by adjusted score
+    validated.sort(key=lambda c: c.score, reverse=True)
+
+    # Check if any chunks survived validation with reasonable scores
+    has_good = any(c.score >= min_score for c in validated)
+    if has_good:
+        return validated[:top_k]
+
+    # No chunks with law context found — return original results so the agent
+    # can still answer "not found in your documents"
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -519,11 +672,26 @@ def retrieve_context(
         entities, candidate_k, min_score,
     )
 
-    if not rerank_enabled or not merged:
-        return merged[:top_k]
+    if rerank_enabled and merged:
+        try:
+            merged = _rerank(question, merged, candidate_k)
+        except Exception:
+            logger.exception("Reranker failed; falling back to hybrid order")
 
-    try:
-        return _rerank(question, merged, top_k)
-    except Exception:
-        logger.exception("Reranker failed; falling back to hybrid order")
-        return merged[:top_k]
+    # --- Law context validation for legal article queries ---
+    # When the query specifies both an article number AND a law name
+    # (e.g. "статья 3 УК РФ"), validate that each candidate chunk actually
+    # belongs to the requested law by checking the document text surrounding
+    # the chunk for law-name keywords.  This prevents returning "Статья 3
+    # Конституции" when the user asked for "Статья 3 УК РФ".
+    if (
+        merged
+        and entities.article_numbers
+        and entities.law_name
+    ):
+        merged = _validate_law_context(
+            merged, entities.law_name, entities.article_numbers[0],
+            user_id, top_k,
+        )
+
+    return merged[:top_k]

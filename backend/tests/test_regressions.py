@@ -375,3 +375,172 @@ def test_execute_tool_rejects_create_for_search_question(client, monkeypatch, us
     create_calls = [c for c in data["tool_calls"] if c["name"] == "create_document"]
     assert create_calls == [], f"create_document must be blocked for search query, got {create_calls}"
     assert data["created_documents"] == []
+
+
+# --- Legal article search: law detection + context validation ---------------
+
+
+class TestLegalArticleSearch:
+    """Regression tests for legal article search precision.
+
+    The core bug: when a user asks 'статья 3 УК РФ', the system found
+    'Статья 3 Конституции' instead of 'Статья 3 УК' because:
+    1. Entity extraction didn't detect the law name
+    2. Search didn't combine article number with law name
+    3. No post-retrieval validation checked which law the chunk belongs to
+    """
+
+    # --- detect_law() ---
+
+    def test_detect_law_uk_rfs(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("статья 3 УК РФ") == "ук"
+
+    def test_detect_law_ugolovny_kodeks(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("найди статью 3 уголовного кодекса") == "ук"
+
+    def test_detect_law_gk(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("статья 15 ГК РФ") == "гк"
+
+    def test_detect_law_tk(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("статья 10 Трудового кодекса") == "тк"
+
+    def test_detect_law_konstituciya(self):
+        from app.services.entity_extraction import detect_law
+        # Конституция doesn't have an abbreviation in the standard set,
+        # but the full name should be detectable via keywords
+        result = detect_law("статья 3 Конституции РФ")
+        # Result may be None if Конституция isn't in the abbreviation map,
+        # but the important thing is that the system doesn't misidentify it
+        # as УК or ГК
+        assert result != "ук"
+        assert result != "гк"
+
+    def test_detect_law_none_when_no_law(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("найди информацию про MAX") is None
+
+    def test_detect_law_koap(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("статья 12 КоАП") == "коап"
+
+    def test_detect_law_hrk(self):
+        from app.services.entity_extraction import detect_law
+        assert detect_law("статья 5 Семейного кодекса") == "ск"
+
+    # --- get_law_keywords() ---
+
+    def test_get_law_keywords_uk(self):
+        from app.services.entity_extraction import get_law_keywords
+        kw = get_law_keywords("ук")
+        assert any("уголовн" in k for k in kw)
+
+    def test_get_law_keywords_gk(self):
+        from app.services.entity_extraction import get_law_keywords
+        kw = get_law_keywords("гк")
+        assert any("гражданск" in k for k in kw)
+
+    # --- extract_entities() with law_name ---
+
+    def test_extract_entities_with_law(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("статья 3 УК РФ")
+        assert e.article_numbers == ("3",)
+        assert e.law_name == "ук"
+
+    def test_extract_entities_without_law(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("найди информацию про MAX")
+        assert e.article_numbers == ()
+        assert e.law_name is None
+
+    def test_extract_entities_article_plus_full_law_name(self):
+        from app.services.entity_extraction import extract_entities
+        e = extract_entities("найди статью 105 уголовного кодекса российской федерации")
+        assert "105" in e.article_numbers
+        assert e.law_name == "ук"
+
+    # --- generate_article_variants() with law_name ---
+
+    def test_article_variants_include_law_scoped(self):
+        from app.services.entity_extraction import generate_article_variants
+        variants = generate_article_variants("3", law_name="ук")
+        # Must include combined variants like "статья 3 УК"
+        assert any("УК" in v for v in variants), f"variants should include УК: {variants}"
+        # Must still include article-only variants
+        assert "статья 3" in variants
+
+    def test_article_variants_without_law(self):
+        from app.services.entity_extraction import generate_article_variants
+        variants = generate_article_variants("3")
+        # Should not include any law abbreviation
+        assert not any("УК" in v or "ГК" in v for v in variants)
+        assert "статья 3" in variants
+
+    # --- Law validation in retrieval (mocked) ---
+
+    def test_validate_law_context_penalises_wrong_law(self):
+        """Chunks from the wrong law should be penalised."""
+        from app.services.retrieval import RetrievedChunk, _validate_law_context
+        from app.schemas.chat import SourceRef
+
+        # Simulate: chunk from Конституция when user asked for УК
+        chunk_wrong = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="laws.pdf", chunk_index=5, score=0.9,
+                           text="Статья 3. Верховенство Конституции"),
+            score=0.9,
+            text="Статья 3. Верховенство Конституции. Конституция имеет высшую юридическую силу.",
+        )
+        # Simulate: chunk from УК with law context
+        chunk_right = RetrievedChunk(
+            source=SourceRef(document_id=1, filename="laws.pdf", chunk_index=50, score=0.8,
+                           text="Статья 3. Принцип законности"),
+            score=0.8,
+            text="Статья 3. Принцип законности. Уголовный кодекс Российской Федерации.",
+        )
+
+        # Mock document content that contains both articles
+        import types
+        mock_doc = types.SimpleNamespace(
+            id=1,
+            content=(
+                "УГОЛОВНЫЙ КОДЕКС РОССИЙСКОЙ ФЕДЕРАЦИИ\n\n"
+                "Статья 1\n...\nСтатья 2\n...\n"
+                "Статья 3. Принцип законности. Уголовный кодекс Российской Федерации.\n\n"
+                "КОНСТИТУЦИЯ РОССИЙСКОЙ ФЕДЕРАЦИИ\n\n"
+                "Статья 3. Верховенство Конституции. Конституция имеет высшую юридическую силу."
+            ),
+        )
+
+        from unittest.mock import patch, MagicMock
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.all.return_value = [mock_doc]
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = MagicMock(return_value=False)
+
+        with patch("app.services.retrieval.SessionLocal", return_value=mock_session):
+            result = _validate_law_context(
+                [chunk_wrong, chunk_right], "ук", "3", user_id=1, top_k=5,
+            )
+
+        # The УК chunk should rank higher than the Конституция chunk
+        assert len(result) >= 1
+        # Find scores by chunk_index
+        scores = {c.source.chunk_index: c.score for c in result}
+        # Chunk from УК (index 50) should have higher score than Конституция (index 5)
+        if 50 in scores and 5 in scores:
+            assert scores[50] > scores[5], (
+                f"УК chunk (score={scores[50]}) should outrank "
+                f"Конституция chunk (score={scores[5]})"
+            )
+
+    # --- Query reformulation with law awareness ---
+
+    def test_reformulate_includes_law_scoped_variants(self):
+        from app.services.query_reformulation import reformulate_query
+        variants = reformulate_query("найди 3 статью ук рф")
+        # Should include law-scoped variants like "статья 3 УК"
+        assert any("УК" in v for v in variants), f"expected УК in variants: {variants}"
