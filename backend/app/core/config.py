@@ -102,7 +102,9 @@ class Settings(BaseSettings):
 
     # --- Agent layer (function calling over the existing retrieval pipeline) ---
     # How many ranked chunks a search_documents tool call returns to the model.
-    AGENT_TOP_K: int = 3
+    # Must be large enough to surface relevant documents even in large libraries
+    # (50-100+ files).  With top_k=3, the correct document often doesn't appear.
+    AGENT_TOP_K: int = 8
     # Maximum number of tool-call rounds in one agent turn (bounds LLM cost).
     # High enough for the search -> read -> create chain plus a retry after a
     # hallucinated document id.

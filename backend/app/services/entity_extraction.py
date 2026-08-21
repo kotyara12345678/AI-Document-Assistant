@@ -148,6 +148,7 @@ class QueryEntities:
     exact_phrases: tuple[str, ...] = ()
     law_name: str | None = None  # canonical law abbreviation (e.g. "ук", "гк")
     is_quote_request: bool = False  # "процитируй" detected
+    person_name: str | None = None  # "алексея" → "алексей"
 
     @property
     def has_exact(self) -> bool:
@@ -281,6 +282,113 @@ _ORG_RE = re.compile(
 _NUMBER_RE = re.compile(r"(?<!\w)(\d+(?:\.\d+)?)(?!\w)")
 
 
+# ---------------------------------------------------------------------------
+# Person name detection for data queries ("найди инн алексея")
+# ---------------------------------------------------------------------------
+
+# Keywords that often precede a person name in data queries
+_PERSON_CONTEXT_WORDS = (
+    "инн", "снилс", "зарплат", "оклад", "данные", "паспорт",
+    "телефон", "email", "почт", "адрес", "фо", "фио",
+    "реквизит", "договор", "номер",
+)
+
+# Common Russian surname/name endings in genitive case
+_GENITIVE_ENDINGS = (
+    "а", "я", "ей", "ия", "ова", "ева", "ова", "ева",
+    "ы", "и", "ов", "ев", "ёв",
+)
+
+# Known genitive → nominative mappings for common first names
+_NAME_GENITIVE_MAP: dict[str, str] = {
+    "алексея": "алексей",
+    "алексеев": "алексеев",
+    "дмитрия": "дмитрий",
+    "сергея": "сергей",
+    "иваня": "ивань",
+    "ивана": "иван",
+    "антона": "антон",
+    "андрея": "андрей",
+    "никиты": "никита",
+    "максима": "максим",
+    "екатерины": "екатерина",
+    "марии": "мария",
+    "анны": "анна",
+    "елены": "елена",
+    "оли": "оля",
+    "ольги": "ольга",
+    "натальи": "наталья",
+    "татьяны": "татьяна",
+    "ирины": "ирина",
+    "светланы": "светлана",
+    "юрия": "юрий",
+    "якова": "яков",
+    "владимира": "владимир",
+    "александра": "александр",
+    "петра": "пётр",
+}
+
+# Words to skip — these are NOT person names
+_SKIP_WORDS = frozenset({
+    "инн", "снилс", "паспорт", "документ", "файл", "номер",
+    "дата", "телефон", "email", "зарплат", "договор", "статья",
+    "закон", "кодекс", "rf", "рф", "ук", "гк", "тк", "нк",
+    "поиск", "найди", "найти", "покажи", "получи", "прочитай",
+    "список", "все", "всех", "мой", "мои", "моих", "моего",
+    "этот", "эта", "эти", "тот", "та", "те",
+})
+
+
+def _detect_person_name(query: str) -> str | None:
+    """Detect a person name from a data query like 'найди инн алексея'.
+
+    Returns the nominative form (e.g. 'алексей') or None.
+    """
+    q = (query or "").lower()
+    tokens = q.split()
+    if len(tokens) < 3:
+        return None
+
+    # Look for pattern: ... [context_word] [name_token] ...
+    for i, token in enumerate(tokens):
+        clean = re.sub(r"[^а-яё]", "", token)
+        if not clean:
+            continue
+        # Check if previous token is a context word
+        if i > 0:
+            prev = re.sub(r"[^а-яё]", "", tokens[i - 1])
+            if prev in _PERSON_CONTEXT_WORDS:
+                # This token is likely a person name in genitive
+                if clean not in _SKIP_WORDS and len(clean) >= 3:
+                    # Strip genitive endings to get nominative
+                    base = _strip_genitive(clean)
+                    if base and base not in _SKIP_WORDS and len(base) >= 2:
+                        return base
+    return None
+
+
+def _strip_genitive(name: str) -> str:
+    """Best-effort strip of Russian genitive case ending to get nominative."""
+    if not name:
+        return name
+    # First check the known-name lookup (highest confidence)
+    if name in _NAME_GENITIVE_MAP:
+        return _NAME_GENITIVE_MAP[name]
+    # Only strip single-character endings (а, я, ы, и) — multi-char endings
+    # like "ей", "ия", "ова" are too ambiguous and often part of the name itself.
+    # Only strip endings that are unambiguously genitive suffixes.
+    # "ей" is NOT included — it's part of the nominative for many names
+    # (алексей, сергей, андрей) and stripping it produces garbage.
+    for ending in ("ая", "ого", "ему", "ия", "ова", "ева"):
+        if name.endswith(ending) and len(name) - len(ending) >= 3:
+            return name[: -len(ending)]
+    # Single-char endings only when the base is long enough (4+ chars)
+    for ending in ("а", "я", "ы", "и"):
+        if name.endswith(ending) and len(name) - len(ending) >= 4:
+            return name[: -len(ending)]
+    return name
+
+
 def extract_entities(query: str) -> QueryEntities:
     """Extract all recognisable entities from a search query.
 
@@ -367,6 +475,7 @@ def extract_entities(query: str) -> QueryEntities:
         exact_phrases=tuple(phrases),
         law_name=detect_law(query),
         is_quote_request=is_quote,
+        person_name=_detect_person_name(query),
     )
 
 

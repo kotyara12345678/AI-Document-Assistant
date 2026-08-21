@@ -114,6 +114,15 @@ def _entity_variants(query: str) -> list[str]:
     for inn in entities.inn_values:
         variants.append(inn)
 
+    # Person name variants — search by name alone and with "Doc_" prefix
+    # to match filenames like "Doc_алексей.txt"
+    if entities.person_name:
+        name = entities.person_name
+        variants.append(name)
+        variants.append(f"Doc_{name}")
+        variants.append(f"данные {name}")
+        variants.append(f"документ {name}")
+
     # Contract number variants
     for cn in entities.contract_numbers:
         variants.append(f"договор {cn}")
