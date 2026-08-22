@@ -38,9 +38,9 @@ _RETRYABLE_EXCEPTIONS = (
     httpx.RemoteProtocolError,
     httpx.TransportError,
 )
-# Exactly one retry (two attempts total) with a short backoff. We never loop
-# forever: a persistently failing upstream must surface as a GeminiError.
-_RETRY_MAX_ATTEMPTS = 1
+# Retry config: up to 3 attempts with exponential backoff.
+# GigaChat frequently returns 503 even for single-stream keys.
+_RETRY_MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 2.0
 # HTTP status codes that are transient and worth retrying (503 Service
 # Unavailable, 429 Rate Limit, 502 Bad Gateway from load balancers).
@@ -189,12 +189,10 @@ def _post_json(
     json: dict,
     label: str = "chat",
 ) -> "httpx.Response":
-    """POST JSON with exactly one retry on transient network/timeout errors.
+    """POST JSON with retries on transient network/timeout errors and
+    transient HTTP errors (503, 429, 502, 504).
 
-    Non-retryable errors (HTTP status, auth, parse) raise immediately. After the
-    single retry is exhausted the original exception is re-raised so the caller
-    can wrap it as a GeminiError. The response is checked for HTTP errors before
-    returning, so callers can rely on a 2xx response.
+    Up to _RETRY_MAX_ATTEMPTS retries with exponential backoff.
     """
     last_exc: Exception | None = None
     for attempt in range(_RETRY_MAX_ATTEMPTS + 1):
@@ -204,22 +202,30 @@ def _post_json(
             # 429 Rate Limit, 502/504 Bad Gateway).
             if response.status_code in _RETRYABLE_HTTP_STATUSES:
                 if attempt < _RETRY_MAX_ATTEMPTS:
-                    retry_after = float(response.headers.get("Retry-After", _RETRY_BACKOFF_SECONDS))
+                    backoff = _RETRY_BACKOFF_SECONDS * (2 ** attempt)
+                    # Respect Retry-After header if present and reasonable
+                    try:
+                        ra = float(response.headers.get("Retry-After", 0))
+                        if 0 < ra <= 30:
+                            backoff = ra
+                    except (ValueError, TypeError):
+                        pass
                     logger.warning(
                         "GigaChat %s HTTP %s (attempt %s/%s); retrying in %.1fs",
                         label,
                         response.status_code,
                         attempt + 1,
                         _RETRY_MAX_ATTEMPTS + 1,
-                        retry_after,
+                        backoff,
                     )
-                    time.sleep(retry_after)
+                    time.sleep(backoff)
                     continue
             response.raise_for_status()
             return response
         except _RETRYABLE_EXCEPTIONS as exc:
             last_exc = exc
             if attempt < _RETRY_MAX_ATTEMPTS:
+                backoff = _RETRY_BACKOFF_SECONDS * (2 ** attempt)
                 logger.warning(
                     "GigaChat %s request failed (attempt %s/%s, %s: %s); "
                     "retrying in %.1fs",
@@ -228,9 +234,9 @@ def _post_json(
                     _RETRY_MAX_ATTEMPTS + 1,
                     type(exc).__name__,
                     exc,
-                    _RETRY_BACKOFF_SECONDS,
+                    backoff,
                 )
-                time.sleep(_RETRY_BACKOFF_SECONDS)
+                time.sleep(backoff)
                 continue
             raise
     # Should be unreachable (the loop always raises on the last attempt), but
