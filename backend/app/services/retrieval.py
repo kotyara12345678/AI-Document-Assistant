@@ -108,6 +108,12 @@ def _build_exact_patterns(entities: QueryEntities) -> list[str]:
     for num in entities.exact_numbers:
         patterns.append(num)
 
+    # Person name: search for the name itself and with "Doc_" prefix
+    # to match filenames like "Doc_алексей.txt"
+    if entities.person_name:
+        patterns.append(entities.person_name)
+        patterns.append(f"Doc_{entities.person_name}")
+
     # Deduplicate while preserving order
     seen: set[str] = set()
     result: list[str] = []
@@ -161,6 +167,11 @@ def _build_phrase_queries(entities: QueryEntities) -> list[str]:
 
     for inn in entities.inn_values:
         phrases.append(f"инн {inn}")
+
+    # Person name phrase — matches "Алексей Смирнов" or "Doc_алексей"
+    if entities.person_name:
+        phrases.append(entities.person_name)
+        phrases.append(f"Doc_{entities.person_name}")
 
     # Deduplicate
     seen: set[str] = set()
@@ -431,6 +442,28 @@ def _merge_results(
     for chunk in semantic_chunks:
         key = (chunk.source.document_id, chunk.source.chunk_index)
         _add_or_boost(key, chunk, "semantic")
+
+    # --- Filename-aware boost ---
+    # When the query contains a person name, chunks from documents whose
+    # filename contains that name get a significant boost.  This ensures
+    # "Doc_алексей.txt" outranks "Смешные слова.txt" for "найди инн алексея".
+    if entities.person_name:
+        name_lower = entities.person_name.lower()
+        for key, chunk in merged.items():
+            fn = (chunk.source.filename or "").lower()
+            if name_lower in fn:
+                boosted = min(1.0, chunk.score * 1.3)
+                merged[key] = RetrievedChunk(
+                    source=SourceRef(
+                        document_id=chunk.source.document_id,
+                        filename=chunk.source.filename,
+                        chunk_index=chunk.source.chunk_index,
+                        score=boosted,
+                        text=chunk.source.text,
+                    ),
+                    score=boosted,
+                    text=chunk.text,
+                )
 
     # Sort by final score, filter by min_score, cap at top_k.
     results = sorted(merged.values(), key=lambda c: c.score, reverse=True)
