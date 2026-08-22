@@ -58,6 +58,12 @@ _token_lock = threading.Lock()
 _token: str | None = None
 _token_issued_at: float = 0.0
 
+# Single-stream semaphore: when the API key supports only 1 concurrent
+# request, this ensures LLM calls are serialized.  Set to 1 so only one
+# thread can hold it at a time.  Remove or increase if the API key gets
+# more concurrent streams.
+_llm_semaphore = threading.Semaphore(1)
+
 
 class GeminiError(RuntimeError):
     """Raised when the LLM call fails."""
@@ -382,45 +388,46 @@ def chat_completion(
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
-    client = client or _get_shared_client()
-    token = _get_access_token(client)
+    with _llm_semaphore:
+        client = client or _get_shared_client()
+        token = _get_access_token(client)
 
-    payload: dict = {
-        "model": settings.GIGACHAT_MODEL,
-        "temperature": settings.GIGACHAT_TEMPERATURE,
-        "max_tokens": max_tokens if max_tokens is not None else settings.GIGACHAT_MAX_TOKENS,
-        "messages": messages,
-    }
-    if tools:
-        payload["tools"] = tools
-    if response_format is not None:
-        payload["response_format"] = response_format
+        payload: dict = {
+            "model": settings.GIGACHAT_MODEL,
+            "temperature": settings.GIGACHAT_TEMPERATURE,
+            "max_tokens": max_tokens if max_tokens is not None else settings.GIGACHAT_MAX_TOKENS,
+            "messages": messages,
+        }
+        if tools:
+            payload["tools"] = tools
+        if response_format is not None:
+            payload["response_format"] = response_format
 
-    try:
-        response = _post_json(
-            client,
-            _chat_url(),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json=payload,
-            label="chat",
-        )
-        data = response.json()
-    except Exception as exc:
-        logger.exception("GigaChat request failed")
-        raise GeminiError(f"GigaChat request failed: {exc}") from exc
+        try:
+            response = _post_json(
+                client,
+                _chat_url(),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json=payload,
+                label="chat",
+            )
+            data = response.json()
+        except Exception as exc:
+            logger.exception("GigaChat request failed")
+            raise GeminiError(f"GigaChat request failed: {exc}") from exc
 
-    try:
-        message = data["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise GeminiError("GigaChat returned an empty response") from exc
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise GeminiError("GigaChat returned an empty response") from exc
 
-    if callable(usage_hook):
-        usage_hook(_extract_total_tokens(data, messages, message))
-    return message
+        if callable(usage_hook):
+            usage_hook(_extract_total_tokens(data, messages, message))
+        return message
 
 
 def _extract_total_tokens(data: dict, messages: list[dict], message: dict) -> int:
@@ -541,54 +548,53 @@ def chat_with_functions(
 
     Raises GeminiError on missing credentials, OAuth failure, or upstream error.
     """
-    client = client or _get_shared_client()
-    token = _get_access_token(client)
+    with _llm_semaphore:
+        client = client or _get_shared_client()
+        token = _get_access_token(client)
 
-    payload: dict = {
-        "model": settings.GIGACHAT_MODEL,
-        "temperature": settings.GIGACHAT_TEMPERATURE,
-        "max_tokens": settings.GIGACHAT_MAX_TOKENS,
-        "messages": messages,
-    }
-    if functions:
-        payload["functions"] = functions
-        payload["function_call"] = function_call
-    if functions_state_id:
-        payload["functions_state_id"] = functions_state_id
+        payload: dict = {
+            "model": settings.GIGACHAT_MODEL,
+            "temperature": settings.GIGACHAT_TEMPERATURE,
+            "max_tokens": settings.GIGACHAT_MAX_TOKENS,
+            "messages": messages,
+        }
+        if functions:
+            payload["functions"] = functions
+            payload["function_call"] = function_call
+        if functions_state_id:
+            payload["functions_state_id"] = functions_state_id
 
-    try:
-        response = _post_json(
-            client,
-            _chat_url(),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json=payload,
-            label="functions",
-        )
-        data = response.json()
-    except httpx.HTTPStatusError as exc:
-        # Surface the real GigaChat error (status + body) without masking it,
-        # and never log secrets (token/key live in headers only).
-        _log_gigachat_error(exc.response, payload, _chat_url())
-        raise GeminiError(
-            f"GigaChat HTTP {exc.response.status_code}: {_safe_body(exc.response)[:500]}"
-        ) from exc
-    except Exception as exc:
-        logger.exception("GigaChat request failed")
-        raise GeminiError(f"GigaChat request failed: {exc}") from exc
+        try:
+            response = _post_json(
+                client,
+                _chat_url(),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json=payload,
+                label="functions",
+            )
+            data = response.json()
+        except httpx.HTTPStatusError as exc:
+            _log_gigachat_error(exc.response, payload, _chat_url())
+            raise GeminiError(
+                f"GigaChat HTTP {exc.response.status_code}: {_safe_body(exc.response)[:500]}"
+            ) from exc
+        except Exception as exc:
+            logger.exception("GigaChat request failed")
+            raise GeminiError(f"GigaChat request failed: {exc}") from exc
 
-    try:
-        message = data["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise GeminiError("GigaChat returned an empty response") from exc
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise GeminiError("GigaChat returned an empty response") from exc
 
-    state_id = data.get("functions_state_id") or message.get("functions_state_id")
-    if callable(usage_hook):
-        usage_hook(_extract_total_tokens(data, messages, message))
-    return message, state_id
+        state_id = data.get("functions_state_id") or message.get("functions_state_id")
+        if callable(usage_hook):
+            usage_hook(_extract_total_tokens(data, messages, message))
+        return message, state_id
 
 
 def generate_answer(
