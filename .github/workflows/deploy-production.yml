@@ -136,7 +136,7 @@ jobs:
           GIGACHAT_SCOPE=${{ secrets.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS' }}
           GIGACHAT_BASE_URL=${{ secrets.GIGACHAT_BASE_URL || 'https://gigachat.devices.sberbank.ru/api/v1' }}
           GIGACHAT_AUTH_URL=${{ secrets.GIGACHAT_AUTH_URL || 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth' }}
-          GIGACHAT_MODEL=${{ secrets.GIGACHAT_MODEL || 'GigaChat' }}
+          GIGACHAT_MODEL=${{ secrets.GIGACHAT_MODEL || 'GigaChat-Max' }}
           QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }}
           CORS_ORIGINS=${{ vars.CORS_ORIGINS || '["http://localhost:80"]' }}
           ADMIN_EMAILS=${{ vars.ADMIN_EMAILS || '[]' }}
