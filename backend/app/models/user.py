@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     from app.models.chat import Chat
     from app.models.chat_message import ChatMessage, ChatSummary
     from app.models.document import Document
+    from app.models.job import Job
+    from app.models.notification import Notification
     from app.models.report import Report
     from app.models.usage_log import UsageLog
 
@@ -68,6 +70,12 @@ class User(Base):
         back_populates="reported_user",
         foreign_keys="Report.reported_user_id",
         cascade="all, delete-orphan",
+    )
+    jobs: Mapped[list["Job"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    notifications: Mapped[list["Notification"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

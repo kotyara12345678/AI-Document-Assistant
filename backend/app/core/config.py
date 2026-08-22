@@ -201,6 +201,18 @@ class Settings(BaseSettings):
         "Preserve names, numbers and decisions verbatim where relevant."
     )
 
+    # --- Background job queue (persistent jobs in PostgreSQL) ---
+    # Max concurrent jobs a single worker can execute simultaneously.
+    WORKER_CONCURRENCY: int = 1
+    # Seconds between polling cycles when the queue is idle.
+    JOB_POLL_INTERVAL: float = 2.0
+    # Seconds after which a "running" job is considered stale (worker crash).
+    JOB_STALE_TIMEOUT_SECONDS: int = 600  # 10 minutes
+    # Max queued (non-running) jobs a single user may have at once.
+    MAX_QUEUED_JOBS_PER_USER: int = 5
+    # Max running jobs per user (prevents one user from monopolising the worker).
+    MAX_RUNNING_JOBS_PER_USER: int = 2
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -86,6 +86,27 @@ services:
     ports:
       - "5173:80"
 
+  worker:
+    image: ${IMAGE_BACKEND:-ghcr.io/kotyara12345678/ai-document-assistant-backend:latest}
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://docassistant:${POSTGRES_PASSWORD:-docassistant}@db:5432/docassistant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: document_chunks
+      UPLOAD_DIR: /data/uploads
+      HF_HOME: /data/hf
+    volumes:
+      - staging_uploads:/data/uploads
+      - staging_hf:/data/hf
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    entrypoint: ["python", "-m", "app.worker"]
+
 volumes:
   staging_postgres:
   staging_qdrant:

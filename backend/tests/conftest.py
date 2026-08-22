@@ -143,6 +143,8 @@ def _clean_db():
     from app.models.chat import Chat
     from app.models.chat_message import ChatMessage, ChatSummary
     from app.models.document import Document
+    from app.models.job import Job
+    from app.models.notification import Notification
     from app.models.report import Report
     from app.models.user import User
 
@@ -157,6 +159,8 @@ def _clean_db():
         db.query(AgentSession).delete()
         db.query(Chat).delete()
         db.query(Document).delete()
+        db.query(Notification).delete()
+        db.query(Job).delete()
         db.query(Report).delete()
         db.query(User).delete()
         db.commit()
@@ -170,6 +174,8 @@ def _clean_db():
         db.query(AgentSession).delete()
         db.query(Chat).delete()
         db.query(Document).delete()
+        db.query(Notification).delete()
+        db.query(Job).delete()
         db.query(Report).delete()
         db.query(User).delete()
         db.commit()
