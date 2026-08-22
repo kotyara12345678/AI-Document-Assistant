@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     # before any file is rendered, so an oversized spec can never blow up the
     # generator or the user's storage.
     AGENT_DOCUMENT_MAX_CHARS: int = 60_000
-    AGENT_DOCUMENT_MAX_SECTIONS: int = 50
+    AGENT_DOCUMENT_MAX_SECTIONS: int = 100
     AGENT_DOCUMENT_MAX_PARAGRAPHS: int = 200
     AGENT_DOCUMENT_MAX_LINE_CHARS: int = 2_000
     AGENT_DOCUMENT_MAX_LIST_ITEMS: int = 200

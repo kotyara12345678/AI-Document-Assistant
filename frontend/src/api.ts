@@ -14,8 +14,12 @@ import type {
   CreatedDocument,
   DocumentContent,
   DocumentOut,
+  JobListResponse,
+  JobResponse,
   MeStats,
   MessageOut,
+  NotificationListResponse,
+  NotificationResponse,
   SourceRef,
   UsageStats,
   UserOut,
@@ -366,5 +370,119 @@ export function documentFileSource(id: number): { url: string; httpHeaders: Reco
   return {
     url: documentFileUrl(id),
     httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+  };
+}
+
+// ── Background jobs ────────────────────────────────────────────────────────────
+
+export interface CreateJobParams {
+  question: string;
+  chat_id?: number | null;
+  context_document_ids?: number[] | null;
+  document_id?: number | null;
+  document_ids?: number[] | null;
+}
+
+export async function createJob(params: CreateJobParams): Promise<JobResponse> {
+  const res = await fetch(`${BASE}/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(params),
+  });
+  return handle<JobResponse>(res);
+}
+
+export async function listJobs(): Promise<JobListResponse> {
+  const res = await fetch(`${BASE}/jobs`, { headers: authHeaders() });
+  return handle<JobListResponse>(res);
+}
+
+export async function getJob(id: number): Promise<JobResponse> {
+  const res = await fetch(`${BASE}/jobs/${id}`, { headers: authHeaders() });
+  return handle<JobResponse>(res);
+}
+
+export async function cancelJob(id: number): Promise<JobResponse> {
+  const res = await fetch(`${BASE}/jobs/${id}/cancel`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handle<JobResponse>(res);
+}
+
+// ── Notifications ──────────────────────────────────────────────────────────────
+
+export async function listNotifications(unreadOnly = false): Promise<NotificationListResponse> {
+  const qs = unreadOnly ? "?unread_only=true" : "";
+  const res = await fetch(`${BASE}/notifications${qs}`, { headers: authHeaders() });
+  return handle<NotificationListResponse>(res);
+}
+
+export async function markNotificationRead(id: number): Promise<NotificationResponse> {
+  const res = await fetch(`${BASE}/notifications/${id}/read`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handle<NotificationResponse>(res);
+}
+
+export async function markAllNotificationsRead(): Promise<{ marked_read: number }> {
+  const res = await fetch(`${BASE}/notifications/read-all`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handle<{ marked_read: number }>(res);
+}
+
+export interface NotificationStreamHandlers {
+  onNotification: (n: { id: number; job_id: number | null; title: string; body: string | null; created_at: string }) => void;
+  onError?: (msg: string) => void;
+}
+
+export async function streamNotifications(handlers: NotificationStreamHandlers): Promise<() => void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/notifications/stream`, { headers: authHeaders() });
+  } catch (err) {
+    handlers.onError?.(err instanceof Error ? err.message : t("api.networkError"));
+    return () => {};
+  }
+  if (!res.ok || !res.body) {
+    handlers.onError?.(`HTTP ${res.status}`);
+    return () => {};
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let aborted = false;
+
+  (async () => {
+    while (!aborted) {
+      const { value, done } = await reader.read();
+      if (done || aborted) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        const json = dataLine.slice(5).trim();
+        if (!json) continue;
+        try {
+          const evt = JSON.parse(json);
+          if (evt.type === "notification") {
+            handlers.onNotification(evt);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  })();
+
+  return () => {
+    aborted = true;
+    reader.cancel().catch(() => {});
   };
 }

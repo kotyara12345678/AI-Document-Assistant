@@ -1,8 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import type { AgentStep, ChatOut, CreatedDocument, DocumentContent, DocumentOut, MessageOut, SourceRef, UserOut } from "./types";
+import type { AgentStep, ChatOut, CreatedDocument, DocumentContent, DocumentOut, JobResponse, MessageOut, SourceRef, UserOut } from "./types";
 import {
+  cancelJob,
   createChat,
+  createJob,
   deleteAllDocuments,
   deleteChat,
   deleteDocument,
@@ -12,10 +14,16 @@ import {
   fetchDocumentContent,
   fetchDocuments,
   fetchMe,
+  getJob,
   getToken,
+  listJobs,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
   renameChat,
   setToken,
   streamAgent,
+  streamNotifications,
   uploadDocuments,
 } from "./api";
 import UploadDropzone from "./components/UploadDropzone";
@@ -41,6 +49,15 @@ interface Message {
   documentId?: number;
   contextDocumentIds?: number[] | null;
   error?: boolean;
+  jobId?: number;
+  jobStatus?: JobResponse["status"];
+}
+
+const HEAVY_TASK_RE =
+  /translat|перевед|перевести|отредактируй|отредактировать|отредактируй|edit|create|создай|создать|сгенерируй|сгенерировать|сделай|сделать|make|generate|write|напиши|написать|rewrite|перепиши|переписать|resume|резюме|summary|summarize|суммариз|конспект|дайджест|pdf|docx|odt/i;
+
+function isHeavyTask(text: string): boolean {
+  return HEAVY_TASK_RE.test(text);
 }
 
 const THEME_KEY = "docsearch-theme";
@@ -100,6 +117,12 @@ export default function App() {
   const [chatMenuFor, setChatMenuFor] = useState<number | null>(null);
   // Mobile-only drawer (left panel becomes a tab opened via the top-right button).
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Background jobs tracked locally (keyed by job.id).
+  const [activeJobs, setActiveJobs] = useState<Map<number, JobResponse>>(new Map());
+  // Notifications
+  const [notifications, setNotifications] = useState<{ id: number; job_id: number | null; title: string; body: string | null; is_read: boolean; created_at: string }[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifsOpen, setNotifsOpen] = useState(false);
   // Desktop: user can collapse the whole left panel. Persisted per browser.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -370,6 +393,106 @@ export default function App() {
     }
   }, [t]);
 
+  // ── F5 recovery: reload active (queued/running) jobs on mount ────────────────
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { jobs } = await listJobs();
+        if (cancelled) return;
+        const active = jobs.filter((j) => j.status === "queued" || j.status === "running");
+        if (active.length > 0) {
+          setActiveJobs((prev) => {
+            const next = new Map(prev);
+            for (const j of active) next.set(j.id, j);
+            return next;
+          });
+        }
+      } catch {
+        /* non-critical */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user]);
+
+  // ── Poll active jobs every 4 s ───────────────────────────────────────────────
+  useEffect(() => {
+    if (activeJobs.size === 0) return;
+    const ids = [...activeJobs.keys()];
+    let stopped = false;
+    const poll = async () => {
+      for (const id of ids) {
+        if (stopped) return;
+        try {
+          const j = await getJob(id);
+          if (stopped) return;
+          if (j.status === "completed" || j.status === "failed" || j.status === "cancelled") {
+            setActiveJobs((prev) => { const next = new Map(prev); next.delete(id); return next; });
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.jobId === id
+                  ? {
+                      ...m,
+                      jobStatus: j.status,
+                      text: j.status === "completed"
+                        ? (j.result?.content ?? m.text)
+                        : j.status === "failed"
+                          ? (j.error ?? t("app.jobError"))
+                          : t("app.jobCancelled"),
+                      sources: j.status === "completed" && j.result?.sources ? j.result.sources : m.sources,
+                      createdDocuments: j.status === "completed" && j.result?.created_documents
+                        ? j.result.created_documents
+                        : m.createdDocuments,
+                    }
+                  : m
+              )
+            );
+            if (j.status === "completed") {
+              flashNotice(t("app.jobDone"));
+              void refreshChats();
+            }
+          } else {
+            setActiveJobs((prev) => { const next = new Map(prev); next.set(id, j); return next; });
+          }
+        } catch {
+          /* ignore transient errors */
+        }
+      }
+    };
+    const timer = window.setInterval(poll, 4000);
+    void poll();
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [activeJobs.size, flashNotice, refreshChats, t]);
+
+  // ── Notification SSE stream ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) return;
+    let stopped = false;
+    const connect = async () => {
+      try {
+        const { notifications: existing, unread_count } = await listNotifications();
+        if (stopped) return;
+        setNotifications(existing);
+        setUnreadCount(unread_count);
+      } catch {
+        /* non-critical */
+      }
+      const unsub = await streamNotifications({
+        onNotification(n) {
+          if (stopped) return;
+          setNotifications((prev) => [{ ...n, is_read: false }, ...prev]);
+          setUnreadCount((c) => c + 1);
+        },
+      });
+      if (stopped) { unsub(); return; }
+      return unsub;
+    };
+    let cleanup: (() => void) | undefined;
+    void connect().then((unsub) => { if (unsub) cleanup = unsub; });
+    return () => { stopped = true; cleanup?.(); };
+  }, [user]);
+
   const selectChat = useCallback(
     async (chatId: number) => {
       setSidebarOpen(false);
@@ -627,6 +750,21 @@ export default function App() {
     }
   }, [closeViewer, flashNotice, t]);
 
+  const handleCancelJob = useCallback(
+    async (jobId: number) => {
+      try {
+        await cancelJob(jobId);
+        setActiveJobs((prev) => { const next = new Map(prev); next.delete(jobId); return next; });
+        setMessages((prev) =>
+          prev.map((m) => (m.jobId === jobId ? { ...m, jobStatus: "cancelled" as const, text: t("app.jobCancelled") } : m))
+        );
+      } catch {
+        flashNotice(t("app.errorCancelJob"));
+      }
+    },
+    [flashNotice, t]
+  );
+
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -641,14 +779,45 @@ export default function App() {
       const userMsg: Message = { id: nextLocalId(), role: "user", text: trimmed };
       const assistantId = nextLocalId();
       const assistantMsg: Message = { id: assistantId, role: "assistant", text: "", agentSteps: [] };
-      // Sending pins the view back to the bottom even if the user had
-      // scrolled up to read history; the [messages] effect below keeps it
-      // pinned while the assistant answer streams in.
       stickToBottomRef.current = true;
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInput("");
       setLoading(true);
 
+      if (isHeavyTask(trimmed)) {
+        // ── Background job path ────────────────────────────────────────────────
+        setLoading(false);
+        try {
+          const job = await createJob({
+            question: trimmed,
+            chat_id: chatId,
+            context_document_ids: contextDocs.length ? [...contextDocs] : null,
+          });
+          setActiveJobs((prev) => { const next = new Map(prev); next.set(job.id, job); return next; });
+          // Rewrite the assistant message to show "queued" status instead of streaming
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, jobId: job.id, jobStatus: job.status, text: t("app.jobQueued") }
+                : m
+            )
+          );
+          flashNotice(t("app.jobSubmitting"));
+          setContextDocs([]);
+          void refreshChats();
+        } catch (err) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, text: err instanceof Error ? err.message : t("app.errorCreateJob"), error: true }
+                : m
+            )
+          );
+        }
+        return;
+      }
+
+      // ── Normal streaming path ────────────────────────────────────────────────
       try {
         await streamAgent(
           {
@@ -704,7 +873,6 @@ export default function App() {
             },
           }
         );
-        // The backend may have titled this chat after its first question.
         setContextDocs([]);
         void refreshChats();
       } catch (err) {
@@ -719,7 +887,7 @@ export default function App() {
         setLoading(false);
       }
     },
-    [loading, activeChatId, refreshChats, contextDocs, t]
+    [loading, activeChatId, refreshChats, contextDocs, t, flashNotice]
   );
 
   const openSource = useCallback(
@@ -1145,19 +1313,82 @@ export default function App() {
                 {t("app.searchByCount", { count: documents.length })}
               </div>
             </div>
-            <button
-              type="button"
-              className="chat__menu-btn"
-              onClick={() => toggleSidebar()}
-              aria-label={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
-              title={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
-            >
-              <span className="chat__menu-icon" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-              </span>
-            </button>
+            <div className="chat__header-actions">
+              <div className="notif-wrap">
+                <button
+                  type="button"
+                  className={`notif-bell ${unreadCount > 0 ? "notif-bell--has-unread" : ""}`}
+                  onClick={() => setNotifsOpen((v) => !v)}
+                  title={t("app.notificationsTitle")}
+                  aria-label={t("app.notificationsTitle")}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  {unreadCount > 0 && <span className="notif-bell__badge">{unreadCount > 99 ? "99+" : unreadCount}</span>}
+                </button>
+                {notifsOpen && (
+                  <>
+                    <div className="doc-menu-backdrop" onClick={() => setNotifsOpen(false)} />
+                    <div className="notif-panel">
+                      <div className="notif-panel__header">
+                        <span className="notif-panel__title">{t("app.notificationsTitle")}</span>
+                        {unreadCount > 0 && (
+                          <button
+                            type="button"
+                            className="btn--link"
+                            onClick={async () => {
+                              await markAllNotificationsRead();
+                              setUnreadCount(0);
+                              setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+                            }}
+                          >
+                            {t("app.markAllRead")}
+                          </button>
+                        )}
+                      </div>
+                      <div className="notif-panel__list">
+                        {notifications.length === 0 ? (
+                          <div className="notif-panel__empty">{t("app.notificationsEmpty")}</div>
+                        ) : (
+                          notifications.slice(0, 30).map((n) => (
+                            <button
+                              key={n.id}
+                              className={`notif-item ${!n.is_read ? "notif-item--unread" : ""}`}
+                              onClick={async () => {
+                                if (!n.is_read) {
+                                  await markNotificationRead(n.id);
+                                  setNotifications((prev) => prev.map((x) => x.id === n.id ? { ...x, is_read: true } : x));
+                                  setUnreadCount((c) => Math.max(0, c - 1));
+                                }
+                                setNotifsOpen(false);
+                              }}
+                            >
+                              <div className="notif-item__title">{n.title}</div>
+                              {n.body && <div className="notif-item__body">{n.body}</div>}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                type="button"
+                className="chat__menu-btn"
+                onClick={() => toggleSidebar()}
+                aria-label={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
+                title={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
+              >
+                <span className="chat__menu-icon" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </button>
+            </div>
           </div>
 
           <div className="chat__scroll">
@@ -1175,7 +1406,7 @@ export default function App() {
               </div>
             ) : (
               messages.map((m) => (
-                <MessageItem key={m.id} m={m} documents={documents} onOpenSource={openSource} />
+                <MessageItem key={m.id} m={m} documents={documents} onOpenSource={openSource} onCancelJob={handleCancelJob} />
               ))
             )}
             {loading && (
@@ -1336,17 +1567,45 @@ const MessageItem = memo(function MessageItem({
   m,
   documents,
   onOpenSource,
+  onCancelJob,
 }: {
   m: Message;
   documents: DocumentOut[];
   onOpenSource: (s: SourceRef) => void;
+  onCancelJob?: (jobId: number) => void;
 }) {
   const { t } = useI18n();
+  const jobStatusLabel = m.jobStatus
+    ? m.jobStatus === "queued"
+      ? t("app.jobQueued")
+      : m.jobStatus === "running"
+        ? t("app.jobRunning")
+        : m.jobStatus === "completed"
+          ? t("app.jobCompleted")
+          : m.jobStatus === "failed"
+            ? t("app.jobFailed")
+            : t("app.jobCancelled")
+    : null;
   return (
     <div className={`msg msg--${m.role}`}>
       <div className={`msg__bubble ${m.error ? "msg__bubble--error" : ""}`}>
         {extractCodeBlock(m.text) ? <CopyableBlock result={extractCodeBlock(m.text)!} /> : m.text}
       </div>
+      {m.jobId != null && jobStatusLabel && (
+        <div className={`job-status job-status--${m.jobStatus}`}>
+          <span className="job-status__dot" />
+          <span className="job-status__label">{jobStatusLabel}</span>
+          {(m.jobStatus === "queued" || m.jobStatus === "running") && onCancelJob && (
+            <button
+              type="button"
+              className="job-status__cancel"
+              onClick={() => onCancelJob(m.jobId!)}
+            >
+              {t("app.jobCancel")}
+            </button>
+          )}
+        </div>
+      )}
       {m.role === "user" && m.contextDocumentIds && m.contextDocumentIds.length > 0 && (
         <div className="msg__context-chips">
           {m.contextDocumentIds.map((id) => (

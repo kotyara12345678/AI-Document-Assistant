@@ -38,10 +38,10 @@ _RETRYABLE_EXCEPTIONS = (
     httpx.RemoteProtocolError,
     httpx.TransportError,
 )
-# Retry config: up to 3 attempts with exponential backoff.
-# GigaChat frequently returns 503 even for single-stream keys.
-_RETRY_MAX_ATTEMPTS = 3
-_RETRY_BACKOFF_SECONDS = 2.0
+# Retry config: up to 4 attempts with exponential backoff.
+# GigaChat frequently returns 503/429 even for single-stream keys.
+_RETRY_MAX_ATTEMPTS = 4
+_RETRY_BACKOFF_SECONDS = 3.0
 # HTTP status codes that are transient and worth retrying (503 Service
 # Unavailable, 429 Rate Limit, 502 Bad Gateway from load balancers).
 _RETRYABLE_HTTP_STATUSES = {429, 502, 503, 504}

@@ -230,3 +230,42 @@ export interface AdminStats {
   errors: { total: number; status_buckets: Record<string, number>; recent: AdminErrorEntry[] };
   generated_at: string;
 }
+
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface JobResponse {
+  id: number;
+  type: string;
+  status: JobStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  result: {
+    chat_id?: number;
+    content?: string;
+    sources?: SourceRef[];
+    created_documents?: CreatedDocument[];
+  } | null;
+  error: string | null;
+  chat_id: number | null;
+}
+
+export interface JobListResponse {
+  jobs: JobResponse[];
+  total: number;
+}
+
+export interface NotificationResponse {
+  id: number;
+  job_id: number | null;
+  title: string;
+  body: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  notifications: NotificationResponse[];
+  unread_count: number;
+  total: number;
+}
