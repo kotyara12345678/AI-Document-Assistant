@@ -18,6 +18,7 @@ from app.api.routes import (
     jobs,
     me,
     notifications,
+    push,
     ready,
     reports,
     search,
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(agent.router, prefix=f"{settings.API_PREFIX}/agent", tags=["agent"])
     app.include_router(jobs.router, prefix=f"{settings.API_PREFIX}/jobs", tags=["jobs"])
     app.include_router(notifications.router, prefix=f"{settings.API_PREFIX}/notifications", tags=["notifications"])
+    app.include_router(push.router, prefix=f"{settings.API_PREFIX}/push", tags=["push"])
     app.include_router(me.router, prefix=f"{settings.API_PREFIX}/me", tags=["me"])
 
     @app.middleware("http")

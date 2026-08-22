@@ -6574,125 +6574,6 @@ a {
   color: var(--bg);
 }
 
-/* ── Chat header actions row (notification bell + menu) ──────────────────────── */
-.chat__header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* ── Notification bell ───────────────────────────────────────────────────────── */
-.notif-wrap {
-  position: relative;
-}
-
-.notif-bell {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg-soft);
-  color: var(--text);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.notif-bell:hover { background: var(--bg-hover, #eaeaea); }
-.notif-bell--has-unread { color: var(--accent, #6366f1); }
-
-.notif-bell__badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: #ef4444;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 18px;
-  text-align: center;
-  pointer-events: none;
-}
-
-/* ── Notification dropdown panel ─────────────────────────────────────────────── */
-.notif-panel {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 6px;
-  width: 320px;
-  max-height: 420px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 8px 30px rgba(0,0,0,.12);
-  z-index: 100;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.notif-panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.notif-panel__title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.notif-panel__list {
-  flex: 1;
-  overflow-y: auto;
-}
-
-.notif-panel__empty {
-  padding: 24px 14px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-.notif-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 10px 14px;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.notif-item:hover { background: var(--bg-soft, #f5f5f5); }
-.notif-item--unread { background: var(--bg-soft, #f0f0ff); }
-.notif-item--unread:hover { background: var(--bg-hover, #e8e8ff); }
-
-.notif-item__title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-.notif-item__body {
-  font-size: 12px;
-  color: var(--text-muted, #888);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ── Job status badge under a message ────────────────────────────────────────── */
 .job-status {
   display: inline-flex;
@@ -6750,7 +6631,6 @@ a {
 
 /* ── Mobile adjustments ──────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  .chat__header-actions { gap: 4px; }
-  .notif-panel { width: 280px; }
+  .job-status { font-size: 11px; }
 }
 

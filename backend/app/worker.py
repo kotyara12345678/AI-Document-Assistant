@@ -10,11 +10,14 @@ Or via the entrypoint:
     exec python -m app.worker
 """
 
+import json
 import logging
 import os
 import signal
 import sys
 import time
+
+from pywebpush import WebPushException, webpush
 
 # Ensure the backend root is on sys.path when running as a module.
 _backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -79,15 +82,13 @@ def _execute_job(job: Job) -> dict:
 
 
 def _notify_user(job: Job, result: dict) -> None:
-    """Create a notification for the user about the completed/failed job."""
+    """Create a DB notification AND send web push to the user's devices."""
     db = SessionLocal()
     try:
         answer = result.get("answer", "")
-        # Build a short title from the answer or job type.
         title = f"Задача завершена ({job.type})"
         body = answer[:500] if answer else "Задача выполнена."
 
-        # If documents were created, mention them.
         created = result.get("created_documents", [])
         if created:
             doc_names = [d.get("filename", "?") for d in created[:3]]
@@ -100,10 +101,55 @@ def _notify_user(job: Job, result: dict) -> None:
             title=title,
             body=body,
         )
+
+        _send_web_push(db, job.user_id, title, body)
     except Exception:
         logger.exception("Failed to create notification for job %s", job.id)
     finally:
         db.close()
+
+
+def _send_web_push(db, user_id: int, title: str, body: str) -> None:
+    """Dispatch a web push to all of the user's registered subscriptions."""
+    if not settings.VAPID_PRIVATE_KEY:
+        return
+
+    from app.models.push_subscription import PushSubscription
+
+    subs = (
+        db.query(PushSubscription)
+        .filter(PushSubscription.user_id == user_id)
+        .all()
+    )
+    if not subs:
+        return
+
+    payload = json.dumps({"title": title, "body": body})
+
+    for sub in subs:
+        try:
+            subscription_info = {
+                "endpoint": sub.endpoint,
+                "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
+            }
+            webpush(
+                subscription_info=subscription_info,
+                data=payload,
+                vapid_private_key=settings.VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": settings.VAPID_CLAIM_EMAIL},
+            )
+        except WebPushException as exc:
+            status_code = getattr(exc, "response", None)
+            status_code = getattr(status_code, "status_code", None) if status_code else None
+            # 404 Gone / 410 Gone: subscription expired — remove it
+            if status_code in (404, 410):
+                logger.info("Removing stale push subscription %s for user %s", sub.id, user_id)
+                db.query(PushSubscription).filter(PushSubscription.id == sub.id).delete()
+                db.commit()
+            else:
+                logger.warning("Web push failed for subscription %s: %s", sub.id, exc)
+        except Exception:
+            logger.exception("Unexpected error sending web push to subscription %s", sub.id)
 
 
 def run_worker():

@@ -17,15 +17,12 @@ import {
   getJob,
   getToken,
   listJobs,
-  listNotifications,
-  markAllNotificationsRead,
-  markNotificationRead,
   renameChat,
   setToken,
   streamAgent,
-  streamNotifications,
   uploadDocuments,
 } from "./api";
+import { subscribeToPush, isPushSupported } from "./push";
 import UploadDropzone from "./components/UploadDropzone";
 import FileViewer from "./components/FileViewer";
 import AdminPanel from "./components/AdminPanel";
@@ -119,10 +116,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Background jobs tracked locally (keyed by job.id).
   const [activeJobs, setActiveJobs] = useState<Map<number, JobResponse>>(new Map());
-  // Notifications
-  const [notifications, setNotifications] = useState<{ id: number; job_id: number | null; title: string; body: string | null; is_read: boolean; created_at: string }[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
-  const [notifsOpen, setNotifsOpen] = useState(false);
   // Desktop: user can collapse the whole left panel. Persisted per browser.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -465,32 +458,16 @@ export default function App() {
     return () => { stopped = true; window.clearInterval(timer); };
   }, [activeJobs.size, flashNotice, refreshChats, t]);
 
-  // ── Notification SSE stream ──────────────────────────────────────────────────
+  // ── Web Push: subscribe on login if supported ───────────────────────────────
   useEffect(() => {
     if (!user) return;
-    let stopped = false;
-    const connect = async () => {
-      try {
-        const { notifications: existing, unread_count } = await listNotifications();
-        if (stopped) return;
-        setNotifications(existing);
-        setUnreadCount(unread_count);
-      } catch {
-        /* non-critical */
-      }
-      const unsub = await streamNotifications({
-        onNotification(n) {
-          if (stopped) return;
-          setNotifications((prev) => [{ ...n, is_read: false }, ...prev]);
-          setUnreadCount((c) => c + 1);
-        },
-      });
-      if (stopped) { unsub(); return; }
-      return unsub;
-    };
-    let cleanup: (() => void) | undefined;
-    void connect().then((unsub) => { if (unsub) cleanup = unsub; });
-    return () => { stopped = true; cleanup?.(); };
+    if (isPushSupported() && Notification.permission === "default") {
+      // Auto-request permission on first login
+      void subscribeToPush();
+    } else if (isPushSupported() && Notification.permission === "granted") {
+      // Already granted — re-subscribe to ensure backend is up to date
+      void subscribeToPush();
+    }
   }, [user]);
 
   const selectChat = useCallback(
@@ -1313,82 +1290,19 @@ export default function App() {
                 {t("app.searchByCount", { count: documents.length })}
               </div>
             </div>
-            <div className="chat__header-actions">
-              <div className="notif-wrap">
-                <button
-                  type="button"
-                  className={`notif-bell ${unreadCount > 0 ? "notif-bell--has-unread" : ""}`}
-                  onClick={() => setNotifsOpen((v) => !v)}
-                  title={t("app.notificationsTitle")}
-                  aria-label={t("app.notificationsTitle")}
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  {unreadCount > 0 && <span className="notif-bell__badge">{unreadCount > 99 ? "99+" : unreadCount}</span>}
-                </button>
-                {notifsOpen && (
-                  <>
-                    <div className="doc-menu-backdrop" onClick={() => setNotifsOpen(false)} />
-                    <div className="notif-panel">
-                      <div className="notif-panel__header">
-                        <span className="notif-panel__title">{t("app.notificationsTitle")}</span>
-                        {unreadCount > 0 && (
-                          <button
-                            type="button"
-                            className="btn--link"
-                            onClick={async () => {
-                              await markAllNotificationsRead();
-                              setUnreadCount(0);
-                              setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-                            }}
-                          >
-                            {t("app.markAllRead")}
-                          </button>
-                        )}
-                      </div>
-                      <div className="notif-panel__list">
-                        {notifications.length === 0 ? (
-                          <div className="notif-panel__empty">{t("app.notificationsEmpty")}</div>
-                        ) : (
-                          notifications.slice(0, 30).map((n) => (
-                            <button
-                              key={n.id}
-                              className={`notif-item ${!n.is_read ? "notif-item--unread" : ""}`}
-                              onClick={async () => {
-                                if (!n.is_read) {
-                                  await markNotificationRead(n.id);
-                                  setNotifications((prev) => prev.map((x) => x.id === n.id ? { ...x, is_read: true } : x));
-                                  setUnreadCount((c) => Math.max(0, c - 1));
-                                }
-                                setNotifsOpen(false);
-                              }}
-                            >
-                              <div className="notif-item__title">{n.title}</div>
-                              {n.body && <div className="notif-item__body">{n.body}</div>}
-                            </button>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-              <button
-                type="button"
-                className="chat__menu-btn"
-                onClick={() => toggleSidebar()}
-                aria-label={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
-                title={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
-              >
-                <span className="chat__menu-icon" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              </button>
-            </div>
+            <button
+              type="button"
+              className="chat__menu-btn"
+              onClick={() => toggleSidebar()}
+              aria-label={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
+              title={sidebarCollapsed ? t("app.showSidebar") : t("app.hideSidebar")}
+            >
+              <span className="chat__menu-icon" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+            </button>
           </div>
 
           <div className="chat__scroll">
