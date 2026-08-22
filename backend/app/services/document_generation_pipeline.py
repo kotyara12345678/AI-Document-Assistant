@@ -406,6 +406,7 @@ def _consistency_check(
     )
 
     # Truncate if too long for one LLM call
+    document_content_for_check = document_content
     if len(document_content) > 30000:
         document_content_for_check = document_content[:30000] + "\n\n[...остальная часть документа...]"
 
