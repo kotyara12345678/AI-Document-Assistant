@@ -42,6 +42,9 @@ _RETRYABLE_EXCEPTIONS = (
 # forever: a persistently failing upstream must surface as a GeminiError.
 _RETRY_MAX_ATTEMPTS = 1
 _RETRY_BACKOFF_SECONDS = 2.0
+# HTTP status codes that are transient and worth retrying (503 Service
+# Unavailable, 429 Rate Limit, 502 Bad Gateway from load balancers).
+_RETRYABLE_HTTP_STATUSES = {429, 502, 503, 504}
 
 # Process-wide HTTP client (created once, reused by every LLM call). Building a
 # new httpx.Client per request would open a fresh connection pool (TCP/TLS
@@ -191,6 +194,21 @@ def _post_json(
     for attempt in range(_RETRY_MAX_ATTEMPTS + 1):
         try:
             response = client.post(url, headers=headers, json=json)
+            # Retry on transient HTTP errors (503 Service Unavailable,
+            # 429 Rate Limit, 502/504 Bad Gateway).
+            if response.status_code in _RETRYABLE_HTTP_STATUSES:
+                if attempt < _RETRY_MAX_ATTEMPTS:
+                    retry_after = float(response.headers.get("Retry-After", _RETRY_BACKOFF_SECONDS))
+                    logger.warning(
+                        "GigaChat %s HTTP %s (attempt %s/%s); retrying in %.1fs",
+                        label,
+                        response.status_code,
+                        attempt + 1,
+                        _RETRY_MAX_ATTEMPTS + 1,
+                        retry_after,
+                    )
+                    time.sleep(retry_after)
+                    continue
             response.raise_for_status()
             return response
         except _RETRYABLE_EXCEPTIONS as exc:
