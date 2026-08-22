@@ -1305,16 +1305,14 @@ export default function App() {
             </button>
           </div>
 
-          <div className="chat__scroll">
+          <div className={`chat__scroll ${messages.length === 0 && !messagesLoading ? "chat__scroll--empty" : ""}`}>
             <div className="chat__messages" ref={messagesRef} onScroll={handleMessagesScroll}>
             {messagesLoading ? (
               <div className="chat__empty">
-                <div className="chat__empty-icon">💬</div>
                 <div className="chat__empty-sub">{t("app.loadingThread")}</div>
               </div>
             ) : messages.length === 0 ? (
               <div className="chat__empty">
-                <div className="chat__empty-icon">💬</div>
                 <div className="chat__empty-title">{t("app.emptyTitle")}</div>
                 <div className="chat__empty-sub">{t("app.emptySub")}</div>
               </div>

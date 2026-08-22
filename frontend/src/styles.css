@@ -877,6 +877,24 @@ a {
   display: flex;
 }
 
+.chat__scroll--empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat__scroll--empty .chat__messages {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat__scroll--empty .chat__empty {
+  flex: none;
+}
+
 .chat__messages {
   flex: 1;
   min-height: 0;
@@ -1175,11 +1193,6 @@ a {
   justify-content: center;
   padding: 40px 24px;
   text-align: center;
-}
-
-.chat__empty-icon {
-  font-size: 40px;
-  margin-bottom: 12px;
 }
 
 .chat__empty-title {
