@@ -195,6 +195,18 @@ _LISTING_PATTERNS = (
 )
 
 
+# --- Creation patterns: must use create_document tool -----------
+# These queries ask the user to GENERATE content, not RETRIEVE existing data.
+# Forced search is wasteful and confusing for creation requests.
+_CREATION_PATTERNS = (
+    "создай", "создай", "сгенерируй", "сформируй", "сделай",
+    "подготовь", "напиши", "оформи", "составь", "заполни",
+    "создать", "сгенерировать", "сформировать", "сделать",
+    "подготовить", "написать", "оформить", "составить", "заполнить",
+    "создании", "создание", "генерац", "формир",
+)
+
+
 def is_forced_document_query(question: str) -> bool:
     """True when the query MUST go through document search before answering.
 
@@ -216,6 +228,11 @@ def is_forced_document_query(question: str) -> bool:
     # Listing/enumeration queries must use list_documents tool, NOT forced search
     # (forced search only returns top_k=3, not all documents)
     if _has_any(q, _LISTING_PATTERNS):
+        return False
+    # Creation requests should NOT trigger forced search — the model needs
+    # to call create_document, not search_documents.  Creation verbs indicate
+    # the user wants to GENERATE content, not RETRIEVE existing content.
+    if _has_any(q, _CREATION_PATTERNS):
         return False
     if _has_any(q, _FORCED_SEARCH_PREFIXES):
         return True
